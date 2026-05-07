@@ -11,12 +11,47 @@ from services.common import to_simplified
 _model = None
 _MODEL_SIZE = "small"
 
+# Chinese song lyrics prompt — guides Whisper toward real words vs hallucination
+_INITIAL_PROMPT = (
+    "以下是中文歌曲的歌词："
+    "爱 你 我 的 是 不 了 在 有 人 这 中 大 来 上 国 个 到 说 们 为 子 和 你 地 出 道 也 时 年 "
+    "得 就 那 要 下 以 生 会 自 着 去 之 过 家 学 对 她 里 后 小 么 心 多 天 而 能 好 都 然 "
+    "没 日 于 起 还 发 成 事 只 作 当 想 看 文 无 开 手 十 用 主 行 方 又 如 前 所 本 见 经 "
+    "头 面 公 同 三 已 老 从 动 两 长 知 民 样 现 分 将 外 但 身 些 与 高 意 进 把 法 实 "
+    "忘记 我们 永远 幸福 眼泪 离开 回来 世界 天空 微笑 温柔 等待 思念 拥抱 自由 快乐 悲伤 "
+    "梦想 翅膀 光芒 绽放 流浪 方向 时光 回忆 承诺 远方 月光 灿烂 孤单 勇敢 瞬间 温暖 彩虹 "
+    "你好 谢谢 对不起 再见 喜欢 爱情 永远 美丽 寂寞 星星 花朵 春天 冬天 秋天 夏天 昨天 明天 "
+)
+
+# Noise word patterns — short phrases that Whisper hallucinates repeatedly
+_NOISE_PATTERNS = [
+    "这边的银行", "的银行", "这边", "谢谢大家", "谢谢", "再见",
+    "呃", "嗯", "啊", "哦", "嗯嗯",
+]
+
+
+def _filter_noise_words(text: str) -> str:
+    """Remove known noise phrases that Whisper hallucinates from background audio."""
+    for pattern in _NOISE_PATTERNS:
+        # Remove repeated noise phrases
+        while pattern in text:
+            text = text.replace(pattern, "")
+    # Remove very short repeated substrings (e.g., same 2-char sequence 4+ times)
+    for length in [2, 3]:
+        for m in re.finditer(rf"([一-鿿]{{{length}}})", text):
+            sub = m.group(1)
+            count = text.count(sub)
+            if count >= 4 and sub not in ("不要", "已经", "我们", "自己", "还是"):
+                text = text.replace(sub, "")
+    return text
+
 
 def _post_process_text(text: str) -> str:
     text = re.sub(r"[，。！？、]{2,}", lambda m: m.group()[0], text)
     text = re.sub(r"\s+([，。！？、])", r"\1", text)
     text = re.sub(r"([，。！？、])\s+", r"\1", text)
     text = to_simplified(text)
+    text = _filter_noise_words(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -141,6 +176,7 @@ def transcribe_lyrics(audio_path: str) -> dict:
             temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
             best_of=5,
             beam_size=5,
+            initial_prompt=_INITIAL_PROMPT,
         )
     except TypeError:
         # Fallback for older Whisper without anti-hallucination params
@@ -150,6 +186,7 @@ def transcribe_lyrics(audio_path: str) -> dict:
                 language="zh",
                 word_timestamps=True,
                 condition_on_previous_text=False,
+                initial_prompt=_INITIAL_PROMPT,
             )
         except TypeError:
             result = model.transcribe(audio, language="zh", word_timestamps=True)

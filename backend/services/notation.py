@@ -757,18 +757,21 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
     # Distribute melody notes (with lyrics) into measures
     meas_lyrics = {}  # measure_idx → [{lyric, midi, beatOffset}]
     note_idx = 0
+    half_beat = beat_dur / 2  # 8th note grid
     for mi in range(len(chords)):
         m_start = mi * measure_dur
         m_end = m_start + measure_dur
         meas_lyrics[mi] = []
         while note_idx < len(melody_notes) and melody_notes[note_idx]["time"] < m_end:
             note = melody_notes[note_idx]
-            if note["time"] >= m_start:
+            if note["time"] >= m_start and note.get("lyric", ""):
                 beat_pos = (note["time"] - m_start) / beat_dur
+                # Snap to nearest 8th-note grid for clean alignment
+                snapped_beat = round(beat_pos * 2) / 2
                 meas_lyrics[mi].append({
-                    "lyric": note.get("lyric", ""),
+                    "lyric": note["lyric"],
                     "midi": int(round(note.get("midi", 60))),
-                    "beatOffset": round(beat_pos, 3),
+                    "beatOffset": round(snapped_beat, 3),
                     "duration": note.get("duration", 0.5),
                 })
             note_idx += 1

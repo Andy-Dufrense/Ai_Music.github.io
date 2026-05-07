@@ -1,9 +1,9 @@
 """
-Lyrics-to-melody alignment using beat-quantized matching.
-Each character maps to the nearest note within its beat-quantized time window,
-distributed proportionally by beat position.
+Lyrics-to-melody alignment using melody-centric distribution.
+Melody notes (from torchcrepe) have reliable timing; Whisper word timestamps
+are approximate for singing, so we distribute characters proportionally
+across notes based on note density and duration.
 """
-import re
 import numpy as np
 
 from services.common import to_simplified
@@ -31,24 +31,16 @@ def _split_characters(words: list) -> list:
     return result
 
 
-def _snap_to_beat(time_sec: float, beat_dur: float) -> float:
-    """Snap a time to the nearest 8th-note beat grid position.
-    Returns the snapped time in seconds."""
-    half_beat = beat_dur / 2  # Snap to 8th note grid
-    beat_idx = round(time_sec / half_beat)
-    return beat_idx * half_beat
-
-
 def align_lyrics_to_notes(lyrics_data: dict, melody_notes: list, bpm: float = 120.0) -> list:
     """
-    Align lyrics characters to melody notes using beat-quantized matching.
+    Align lyrics characters to melody notes using melody-centric distribution.
 
-    Improvements over v1:
-    - Word timestamps are snapped to 8th-note beat grid before matching
-    - Wider alignment window (1.5 beats) to handle Whisper timestamp jitter
-    - Better melisma: extend characters across all consecutive notes until
-      the next character's note, not just one note
-    - All lyrics characters are guaranteed to appear onto some note
+    Strategy (v3):
+    - Melody note timing is more reliable than Whisper word timestamps
+    - Distribute characters proportionally across notes by note duration
+    - First character → first note, last character → last note
+    - Longer notes get more characters (dense passages)
+    - Melisma: extend characters across adjacent empty notes
     """
     words = lyrics_data.get("words", [])
     if not words or not melody_notes:
@@ -63,93 +55,91 @@ def align_lyrics_to_notes(lyrics_data: dict, melody_notes: list, bpm: float = 12
         return melody_notes
 
     beat_dur = 60.0 / max(bpm, 40.0)
-    align_window = beat_dur * 1.5  # One and a half beats tolerance
 
-    # Snap character times to beat grid for cleaner alignment
-    for ch in chars:
-        ch["snapped"] = _snap_to_beat((ch["start"] + ch["end"]) / 2.0, beat_dur)
+    # Sort notes by time, filter out notes that are too short (likely noise)
+    valid_notes = [(i, n) for i, n in enumerate(melody_notes)
+                   if n.get("duration", 0) >= 0.04]
+    if not valid_notes:
+        for n in melody_notes:
+            n["lyric"] = ""
+        return melody_notes
 
-    # Sort notes by start time
-    note_indices = sorted(range(len(melody_notes)), key=lambda i: melody_notes[i]["time"])
+    valid_notes.sort(key=lambda x: x[1]["time"])
+    n_notes = len(valid_notes)
+    n_chars = len(chars)
+
+    # Compute note weights: longer notes get proportionally more characters
+    durations = np.array([n["duration"] for _, n in valid_notes], dtype=float)
+    total_dur = durations.sum()
+    if total_dur <= 0:
+        durations = np.ones(n_notes)
+        total_dur = n_notes
+
+    # Target number of characters per note (fractional)
+    char_quota = durations * (n_chars / total_dur)
+
+    # Greedy assignment: assign whole characters to notes
     assigned_lyric = [""] * len(melody_notes)
+    char_idx = 0
+    accumulated = 0.0
 
-    # Build note time list: (index, center_time_snapped)
-    note_times = []
-    for ni in note_indices:
-        note = melody_notes[ni]
-        center = (note["time"] + note["end_time"]) / 2.0
-        snap = _snap_to_beat(center, beat_dur)
-        note_times.append((ni, snap))
+    for note_pos, (orig_idx, note) in enumerate(valid_notes):
+        accumulated += char_quota[note_pos]
+        n_assign = int(round(accumulated))
+        if n_assign > 0 and char_idx < n_chars:
+            # Assign characters to this note
+            chars_for_note = chars[char_idx:char_idx + n_assign]
+            # Take the first character as primary, rest can be secondary
+            if chars_for_note:
+                assigned_lyric[orig_idx] = chars_for_note[0]["word"]
+            char_idx += n_assign
+            accumulated -= n_assign
+        # If no char assigned but we have leftover accumulation, carry forward
+        if char_idx >= n_chars:
+            break
 
-    # Pass 1: assign each character to the nearest unassigned note within window
-    char_used = [False] * len(chars)
-    for ci, ch in enumerate(chars):
-        ch_snapped = ch["snapped"]
-        best_ni = -1
-        best_dist = float("inf")
-        for ni, nt in note_times:
-            if assigned_lyric[ni]:
-                continue
-            dist = abs(nt - ch_snapped)
-            if dist < align_window and dist < best_dist:
-                best_dist = dist
-                best_ni = ni
-        if best_ni >= 0:
-            assigned_lyric[best_ni] = ch["word"]
-            char_used[ci] = True
+    # Distribute any remaining characters to remaining notes
+    remaining_chars = chars[char_idx:]
+    remaining_notes = [(orig_idx, note) for orig_idx, note in valid_notes
+                       if not assigned_lyric[orig_idx]]
+    if remaining_chars and remaining_notes:
+        # Distribute evenly
+        chars_per_note = max(1, len(remaining_chars) // len(remaining_notes))
+        ci = 0
+        for orig_idx, note in remaining_notes:
+            if ci < len(remaining_chars):
+                assigned_lyric[orig_idx] = remaining_chars[ci]["word"]
+                ci += chars_per_note
 
-    # Pass 2: assign unused characters to remaining empty notes in time order
-    unused_chars = [chars[i] for i, used in enumerate(char_used) if not used]
-    empty_notes = [ni for ni in note_indices if not assigned_lyric[ni]]
-    if unused_chars:
-        # Sort both by time
-        unused_chars.sort(key=lambda c: c["snapped"])
-        empty_snapped = [(ni, _snap_to_beat(
-            (melody_notes[ni]["time"] + melody_notes[ni]["end_time"]) / 2.0, beat_dur))
-            for ni in empty_notes]
-        empty_snapped.sort(key=lambda x: x[1])
-        for ci, ch in enumerate(unused_chars):
-            if ci < len(empty_snapped):
-                assigned_lyric[empty_snapped[ci][0]] = ch["word"]
+    # If we still have leftover chars, assign to the last notes
+    leftover = [ci for ci in range(len(chars)) if ci not in
+                [i for i in range(len(chars)) if any(
+                    assigned_lyric[ni] == chars[i]["word"] for ni in range(len(melody_notes)))]]
+    if leftover:
+        # Assign leftover to longest empty notes
+        empty_by_dur = sorted(
+            [(i, melody_notes[i]["duration"]) for i in range(len(melody_notes))
+             if not assigned_lyric[i]],
+            key=lambda x: -x[1]
+        )
+        for li, char_i in enumerate(leftover):
+            if li < len(empty_by_dur):
+                assigned_lyric[empty_by_dur[li][0]] = chars[char_i]["word"]
 
-    # Pass 3: melisma — extend each character forward across consecutive
-    # notes until the next character's note or a large gap is encountered
-    # First, build the sequence of assigned note indices
-    assigned_note_order = sorted(
-        [ni for ni in note_indices if assigned_lyric[ni]],
-        key=lambda ni: melody_notes[ni]["time"]
-    )
-    for i, ni in enumerate(assigned_note_order):
-        lyric = assigned_lyric[ni]
-        if not lyric:
+    # Melisma: extend each character across consecutive empty notes
+    # (notes without their own lyrics, within a small time gap)
+    last_assigned_note = None
+    for ni in sorted(range(len(melody_notes)), key=lambda i: melody_notes[i]["time"]):
+        if assigned_lyric[ni]:
+            last_assigned_note = ni
             continue
-        # Find the next note that has a different lyric
-        next_assigned_idx = None
-        for j in range(i + 1, len(assigned_note_order)):
-            next_ni = assigned_note_order[j]
-            if assigned_lyric[next_ni] and assigned_lyric[next_ni] != lyric:
-                next_assigned_idx = next_ni
-                break
-
-        # Extend this lyric to all empty notes between this note and the next assigned note
-        current_end_time = melody_notes[ni]["end_time"]
-        limit_time = float("inf")
-        if next_assigned_idx is not None:
-            limit_time = melody_notes[next_assigned_idx]["time"]
-
-        for candidate_ni in note_indices:
-            if candidate_ni <= ni:
-                continue
-            if melody_notes[candidate_ni]["time"] >= limit_time:
-                break
-            if not assigned_lyric[candidate_ni]:
-                gap = melody_notes[candidate_ni]["time"] - current_end_time
-                if gap < beat_dur * 1.0:  # Within one beat gap
-                    assigned_lyric[candidate_ni] = lyric
-                    current_end_time = melody_notes[candidate_ni]["end_time"]
+        if last_assigned_note is not None:
+            gap = melody_notes[ni]["time"] - melody_notes[last_assigned_note]["end_time"]
+            if gap < beat_dur * 0.8:
+                assigned_lyric[ni] = assigned_lyric[last_assigned_note]
 
     # Apply lyrics to notes
-    for ni in note_indices:
-        melody_notes[ni]["lyric"] = assigned_lyric[ni] if ni < len(assigned_lyric) else ""
+    for i in range(len(melody_notes)):
+        melody_notes[i]["lyric"] = assigned_lyric[i] if i < len(assigned_lyric) else ""
 
     return melody_notes

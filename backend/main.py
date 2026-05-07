@@ -555,8 +555,8 @@ function saveScore() {{
 @app.get("/")
 async def serve_frontend():
     """Serve the main upload page."""
-    frontend_dir = os.path.join(os.path.dirname(TEMPLATE_DIR), "frontend")
-    index_path = os.path.join(frontend_dir, "index.html")
+    project_root = os.path.dirname(BASE_DIR)
+    index_path = os.path.join(project_root, "index.html")
     if not os.path.exists(index_path):
         return HTMLResponse("<h1>Frontend not found</h1>")
     with open(index_path, "r", encoding="utf-8") as f:
@@ -564,7 +564,7 @@ async def serve_frontend():
 
 
 # Mount static files
-frontend_static = os.path.join(os.path.dirname(TEMPLATE_DIR), "frontend", "static")
+frontend_static = os.path.join(os.path.dirname(BASE_DIR), "static")
 if os.path.exists(frontend_static):
     app.mount("/static", StaticFiles(directory=frontend_static), name="static")
 
