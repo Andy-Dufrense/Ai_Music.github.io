@@ -41,7 +41,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import UPLOAD_DIR, OUTPUT_DIR, TEMPLATE_DIR, NOTATION_TYPES
+from config import BASE_DIR, UPLOAD_DIR, OUTPUT_DIR, TEMPLATE_DIR, NOTATION_TYPES
 from services.separator import separate_stems
 from services.analyzer import analyze_full, detect_sections
 from services.melody_rmvpe import extract_melody, extract_bass_notes

@@ -75,11 +75,10 @@ Upload an MP3 file → wait ~2-4 minutes for processing → view the 4 score tab
 │       ├── notation.py          # Score data generation (piano/guitar/bass/drums)
 │       ├── separator.py         # Demucs stem separation
 │       └── svg_renderer.py      # Hand-written SVG rendering engine
-├── frontend/
-│   ├── index.html               # Web UI
-│   └── static/
-│       ├── css/style.css
-│       └── js/app.js
+├── index.html                   # Web UI
+├── static/
+│   ├── css/style.css
+│   └── js/app.js
 ├── music_demo/                  # Demo MP3 files
 └── start.bat                    # Windows quick-start script
 ```
@@ -102,7 +101,7 @@ MP3 Upload
 - **First run** downloads Whisper `small` model (~500MB) and Demucs model (~300MB) — this happens automatically
 - Processing time: ~2-4 min on CPU for a 3-minute song
 - Output files are saved in `backend/outputs/<job_id>/`
-- The frontend hosted on GitHub Pages is **static only** — it won't work without the backend running locally
+- GitHub Pages serves the static UI only — upload & score generation require the backend running locally
 
 ## License
 
