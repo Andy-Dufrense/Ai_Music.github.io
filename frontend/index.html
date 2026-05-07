@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Music - 智能乐谱生成器</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="bg-decoration">
+    <div class="floating-note n1">♪</div>
+    <div class="floating-note n2">♫</div>
+    <div class="floating-note n3">♩</div>
+    <div class="floating-note n4">♬</div>
+    <div class="floating-note n5">♪</div>
+    <div class="floating-note n6">♫</div>
+</div>
+
+<div class="container">
+    <header class="hero">
+        <h1 class="logo">AI Music</h1>
+        <p class="subtitle">智能乐谱生成器 — 上传音乐，自动生成带歌词的乐谱</p>
+    </header>
+
+    <!-- Upload Section (always on top) -->
+    <section id="upload-section" class="card upload-card">
+        <h2 class="section-title">上传音乐文件</h2>
+        <p class="section-hint">支持 .mp3 格式，最大 50MB</p>
+
+        <div class="upload-area" id="upload-area">
+            <div class="upload-icon">
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M12 16V4M12 4L8 8M12 4L16 8"/>
+                    <path d="M3 15v3a3 3 0 003 3h12a3 3 0 003-3v-3"/>
+                </svg>
+            </div>
+            <p class="upload-text">拖拽MP3文件到这里，或点击上传</p>
+            <input type="file" id="file-input" accept=".mp3" hidden>
+            <div id="file-info" class="file-info" style="display:none;">
+                <span class="file-name" id="file-name"></span>
+                <span class="file-remove" id="file-remove">✕</span>
+            </div>
+        </div>
+
+        <button id="btn-upload" class="btn btn-primary" disabled>
+            <span class="btn-text">上传并分析</span>
+            <span class="btn-loading" style="display:none;">
+                <span class="spinner"></span> 分析中...
+            </span>
+        </button>
+
+        <div id="progress-container" style="display:none;">
+            <div id="progress-bar" class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p id="progress-text" class="progress-text"></p>
+        </div>
+    </section>
+
+    <!-- Settings & Generate (unified module) -->
+    <section id="settings-section" class="card" style="display:none;">
+        <!-- Notation type selection -->
+        <h2 class="section-title">选择乐谱类型</h2>
+        <div class="notation-types" id="notation-types">
+            <label class="notation-option" data-type="piano">
+                <input type="radio" name="notation" value="piano">
+                <div class="notation-icon">🎹</div>
+                <div class="notation-name">钢琴谱</div>
+                <div class="notation-desc">五线谱 · 和弦伴奏</div>
+            </label>
+            <label class="notation-option" data-type="guitar">
+                <input type="radio" name="notation" value="guitar">
+                <div class="notation-icon">🎸</div>
+                <div class="notation-name">吉他谱</div>
+                <div class="notation-desc">六线谱 · 扫弦节奏</div>
+            </label>
+            <label class="notation-option" data-type="bass">
+                <input type="radio" name="notation" value="bass">
+                <div class="notation-icon">🎼</div>
+                <div class="notation-name">贝斯谱</div>
+                <div class="notation-desc">四线谱 · 低音旋律</div>
+            </label>
+            <label class="notation-option" data-type="drums">
+                <input type="radio" name="notation" value="drums">
+                <div class="notation-icon">🥁</div>
+                <div class="notation-name">架子鼓谱</div>
+                <div class="notation-desc">鼓谱 · Kick/Snare/HH</div>
+            </label>
+        </div>
+
+        <!-- Analysis summary -->
+        <div id="analysis-summary" class="analysis-summary" style="display:none;">
+            <div class="summary-item"><span class="sum-label">调性</span><span class="sum-value" id="sum-key">—</span></div>
+            <div class="summary-item"><span class="sum-label">BPM</span><span class="sum-value" id="sum-bpm">—</span></div>
+            <div class="summary-item"><span class="sum-label">拍号</span><span class="sum-value" id="sum-ts">—</span></div>
+            <div class="summary-item"><span class="sum-label">和弦进行</span><span class="sum-value" id="sum-chords">—</span></div>
+        </div>
+
+        <!-- Stem selection -->
+        <div id="stem-options-container" style="display:none;">
+            <h3 class="subtitle-sm">选择背景音轨</h3>
+            <div id="stem-options" class="stem-options">
+                <label class="stem-option selected" data-stem="other">
+                    <input type="radio" name="stem" value="other" checked> 🎼 其他乐器
+                </label>
+                <label class="stem-option" data-stem="vocals">
+                    <input type="radio" name="stem" value="vocals"> 🎤 人声
+                </label>
+                <label class="stem-option" data-stem="drums">
+                    <input type="radio" name="stem" value="drums"> 🥁 鼓
+                </label>
+                <label class="stem-option" data-stem="bass">
+                    <input type="radio" name="stem" value="bass"> 🎸 贝斯
+                </label>
+                <label class="stem-option" data-stem="guitar">
+                    <input type="radio" name="stem" value="guitar"> 🎸 吉他
+                </label>
+            </div>
+        </div>
+
+        <button id="btn-generate" class="btn btn-accent" disabled>
+            <span class="btn-text">生成乐谱</span>
+            <span class="btn-loading" style="display:none;">
+                <span class="spinner"></span> 生成中...
+            </span>
+        </button>
+    </section>
+
+    <div id="toast" class="toast" style="display:none;"></div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

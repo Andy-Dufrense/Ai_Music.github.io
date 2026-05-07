@@ -1,0 +1,28 @@
+# Generated outputs and uploads
+backend/outputs/
+backend/uploads/
+backend/test_output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Models (downloaded separately)
+backend/models/
+models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+*.svg
+*.wav
+
+# Environment
+.env
