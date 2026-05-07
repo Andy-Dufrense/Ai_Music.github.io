@@ -757,24 +757,39 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
     # Distribute melody notes (with lyrics) into measures
     meas_lyrics = {}  # measure_idx → [{lyric, midi, beatOffset}]
     note_idx = 0
-    half_beat = beat_dur / 2  # 8th note grid
     for mi in range(len(chords)):
         m_start = mi * measure_dur
         m_end = m_start + measure_dur
-        meas_lyrics[mi] = []
+        raw_lyrics = []
         while note_idx < len(melody_notes) and melody_notes[note_idx]["time"] < m_end:
             note = melody_notes[note_idx]
             if note["time"] >= m_start and note.get("lyric", ""):
                 beat_pos = (note["time"] - m_start) / beat_dur
-                # Snap to nearest 8th-note grid for clean alignment
-                snapped_beat = round(beat_pos * 2) / 2
-                meas_lyrics[mi].append({
+                raw_lyrics.append({
                     "lyric": note["lyric"],
                     "midi": int(round(note.get("midi", 60))),
-                    "beatOffset": round(snapped_beat, 3),
+                    "beatOffset": beat_pos,
                     "duration": note.get("duration", 0.5),
                 })
             note_idx += 1
+
+        # Deduplicate: ensure no two lyrics land on the same 16th-note position
+        meas_lyrics[mi] = []
+        used_slots = set()
+        for ln in sorted(raw_lyrics, key=lambda x: x["beatOffset"]):
+            # Snap to 16th-note grid
+            slot = round(ln["beatOffset"] * 4) / 4
+            # If slot taken, push forward to next available 16th
+            while slot in used_slots and slot < beats_per_measure:
+                slot += 0.25
+            if slot < beats_per_measure:
+                used_slots.add(slot)
+                meas_lyrics[mi].append({
+                    "lyric": ln["lyric"],
+                    "midi": ln["midi"],
+                    "beatOffset": round(slot, 3),
+                    "duration": ln["duration"],
+                })
 
     measures = []
     for measure_idx in range(len(chords)):

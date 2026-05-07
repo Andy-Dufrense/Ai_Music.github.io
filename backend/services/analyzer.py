@@ -527,6 +527,7 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
     # Find contiguous blocks
     sections = []
     i = 0
+    has_intro = False
     while i < len(is_vocal) and i < total_measures:
         block_start = i
         block_vocal = is_vocal[i]
@@ -547,28 +548,24 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
         block_len = block_end - block_start
 
         if block_start == 0 and not block_vocal and block_len >= 1:
-            # Cap intro at 8 measures to prevent excessively long intros
+            # Intro (instrumental opening)
             intro_end = min(block_end, 8)
             sections.append({"start_measure": block_start, "end_measure": intro_end, "label": "前奏"})
-            # If intro was capped, push remaining measures to the next block
+            has_intro = True
             if intro_end < block_end:
                 i = intro_end
                 continue
         elif block_vocal:
-            # Within vocal blocks, try to identify verse vs chorus
-            # by chord pattern repetition
             if block_len >= 3:
-                # Get the chord degree pattern for this block
                 block_degrees = chord_degrees[block_start:block_end] if block_start < len(chord_degrees) else []
 
-                # Check if a similar pattern appeared before
+                # Check if chord pattern matches a previous section
                 is_chorus = False
                 for prev_sec in sections:
                     if prev_sec["label"] in ("主歌", "副歌"):
                         prev_start = prev_sec["start_measure"]
                         prev_end = min(prev_sec["end_measure"], len(chord_degrees))
                         prev_pattern = chord_degrees[prev_start:prev_end]
-                        # Compare first 4 chords
                         if (len(block_degrees) >= 4 and len(prev_pattern) >= 4
                                 and block_degrees[:4] == prev_pattern[:4]):
                             is_chorus = True
@@ -577,7 +574,6 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
                 if is_chorus:
                     sections.append({"start_measure": block_start, "end_measure": block_end, "label": "副歌"})
                 else:
-                    # First vocal section is usually verse, later ones may be chorus
                     has_verse_before = any(s["label"] == "主歌" for s in sections)
                     has_chorus_before = any(s["label"] == "副歌" for s in sections)
 
@@ -586,15 +582,13 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
                     elif has_chorus_before and not has_verse_before:
                         sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
                     else:
-                        # Try to match with known structure
-                        # Higher energy + more stable chords → chorus
+                        # Energy-based: higher energy → chorus
                         block_energy = np.mean(measure_energy[block_start:block_end]) if block_start < len(measure_energy) else 0
                         prev_vocal_energy = []
                         for ps in sections:
                             if ps["label"] in ("主歌", "副歌"):
                                 ps_e = np.mean(measure_energy[ps["start_measure"]:min(ps["end_measure"], len(measure_energy))])
                                 prev_vocal_energy.append(ps_e)
-
                         avg_prev_energy = np.mean(prev_vocal_energy) if prev_vocal_energy else block_energy
                         if block_energy > avg_prev_energy * 1.15:
                             sections.append({"start_measure": block_start, "end_measure": block_end, "label": "副歌"})
@@ -603,11 +597,23 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
             else:
                 sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
         elif not block_vocal and block_len >= 1:
-            # Instrumental block between vocal sections
-            if block_start > 0 and block_end < total_measures - 1:
+            # Instrumental block: could be 间奏 or 尾奏
+            # CRITICAL: the block immediately after intro is NEVER 间奏
+            # (it's likely 主歌 with weak vocal separation)
+            if has_intro and block_start == sections[-1]["end_measure"]:
+                # Right after intro: force 主歌 (vocal separation may have failed)
+                sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
+            elif block_start > 0 and block_end < total_measures - 1:
                 sections.append({"start_measure": block_start, "end_measure": block_end, "label": "间奏"})
             elif block_end >= total_measures - 1:
                 sections.append({"start_measure": block_start, "end_measure": block_end, "label": "尾奏"})
+            else:
+                # Fallback: label as 主歌 if no vocal sections defined yet
+                has_vocal = any(s["label"] in ("主歌", "副歌") for s in sections)
+                if not has_vocal:
+                    sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
+                else:
+                    sections.append({"start_measure": block_start, "end_measure": block_end, "label": "间奏"})
 
         i = block_end
 
