@@ -142,6 +142,27 @@ All score types support standard and compound meters:
 - **CPU optimizations**: Demucs shifts=0, 16kHz sample rate, 120s max duration — ~50% faster than defaults
 - **No LilyPond**: all sheet music is rendered by a custom SVG engine (~2500 lines of hand-written rendering code)
 
+## Known Limitations
+
+### 歌词识别 ⚠️ 主要短板
+- 使用 Whisper `base`（76M 参数），是 OpenAI 最小的模型，**中文识别准确率有限**
+- **幻觉问题**：会出现重复字（"词词词词"、"紧紧紧紧紧"）、无意义虚词、漏句
+- **时间戳偏移**：词级别的时间对齐有误差，导致歌词挂载位置不准
+- **背景干扰**：Demucs 人声分离不干净时，伴奏残留会严重干扰识别
+- **快节奏/说唱段落**：几乎无法正确识别
+- 已有缓解措施（连续重复字过滤、虚词白名单），但不能根治
+- 提升方向：换用更大 Whisper 模型（small/medium）、引入 FunASR/Paraformer、或对歌词做后编辑
+
+### 其他不足
+| 维度 | 问题 |
+|------|------|
+| 调性检测 | 大小调偶尔混淆（C 大调 vs A 小调），无中途转调支持 |
+| 人声分离 | Demucs CPU 模式下分离质量一般，乐器声残留会影响 pitch/lyrics |
+| 和弦识别 | 仅支持三和弦/七和弦，不含转位、挂留、增减等 |
+| 段落检测 | 基于启发式规则，复杂编曲可能误判 |
+| 处理上限 | 120 秒（可调），超长歌曲会被截断 |
+| 吉他指法 | 生僻和弦（如 dim/aug/m7♭5）的指法自动生成不够准确 |
+
 ## License
 
 This project is for personal/demo use.
