@@ -225,17 +225,25 @@ $$("#stem-options .stem-option").forEach((opt) => {
 const NOTATION_NAMES = { piano: "钢琴谱", guitar: "吉他谱", bass: "贝斯谱", drums: "架子鼓谱" };
 
 btnGenerate.addEventListener("click", async () => {
-    const allTypes = [...selectedNotationTypes];
-    if (allTypes.length === 0) {
+    const types = [...selectedNotationTypes];
+    if (types.length === 0) {
         showToast("请先选择乐谱类型", "error");
         return;
     }
 
-    // Split into new vs already-generated
-    const newTypes = allTypes.filter(t => !generatedTypes.has(t));
-    const skippedTypes = allTypes.filter(t => generatedTypes.has(t));
-    for (const st of skippedTypes) {
-        showToast(`${NOTATION_NAMES[st] || st} 已生成过，跳过`, "info");
+    const scoreLinks = $("#score-links");
+
+    // Dedup by checking DOM for existing links (ready or loading) — more reliable than in-memory Set
+    const existing = new Set(
+        [...scoreLinks.querySelectorAll(".score-link.ready, .score-link.loading")]
+            .map(el => el.dataset.type)
+    );
+    const newTypes = types.filter(t => !existing.has(t));
+    const skippedTypes = types.filter(t => existing.has(t));
+
+    if (skippedTypes.length > 0) {
+        const names = skippedTypes.map(t => NOTATION_NAMES[t] || t).join("、");
+        showToast(`${names} 已生成，无需重复生成`, "info");
     }
     if (newTypes.length === 0) return;
 
@@ -243,15 +251,15 @@ btnGenerate.addEventListener("click", async () => {
     const audioStem = stem ? stem.value : "other";
 
     setGenerating(true);
-
-    const scoreLinks = $("#score-links");
     scoreLinks.style.display = "block";
 
     let done = 0;
     for (const ntype of newTypes) {
         const name = NOTATION_NAMES[ntype] || ntype;
         btnGenerate.querySelector(".btn-loading").innerHTML = `<span class="spinner"></span> 生成中 (${done + 1}/${newTypes.length} ${name})…`;
-        scoreLinks.insertAdjacentHTML("beforeend", `<span class="score-link loading" data-type="${ntype}">${name} 生成中…</span>`);
+
+        const loadId = `load-${ntype}-${Date.now()}`;
+        scoreLinks.insertAdjacentHTML("beforeend", `<span class="score-link loading" data-type="${ntype}" data-loadid="${loadId}">${name} 生成中…</span>`);
 
         const formData = new FormData();
         formData.append("job_id", currentJobId);
@@ -269,17 +277,25 @@ btnGenerate.addEventListener("click", async () => {
                 throw new Error(errMsg);
             }
             const data = await res.json();
-            const linkEl = scoreLinks.querySelector(`[data-type="${ntype}"]`);
-            linkEl.className = "score-link ready";
-            linkEl.textContent = `📄 ${name}`;
-            linkEl.addEventListener("click", () => window.open(data.score_url, "_blank"));
+            // Remove loading placeholder
+            const loadEl = scoreLinks.querySelector(`[data-loadid="${loadId}"]`);
+            if (loadEl) loadEl.remove();
+            // Add ready button with named window to avoid duplicate tabs
+            const btn = document.createElement("span");
+            btn.className = "score-link ready";
+            btn.dataset.type = ntype;
+            btn.textContent = `📄 ${name}`;
+            btn.addEventListener("click", () => window.open(data.score_url, `score-${ntype}`));
+            scoreLinks.appendChild(btn);
             generatedTypes.add(ntype);
             done++;
         } catch (err) {
-            const linkEl = scoreLinks.querySelector(`[data-type="${ntype}"]`);
-            linkEl.className = "score-link error";
-            linkEl.textContent = `${name}: 失败`;
-            linkEl.title = err.message;
+            const loadEl = scoreLinks.querySelector(`[data-loadid="${loadId}"]`);
+            if (loadEl) {
+                loadEl.className = "score-link error";
+                loadEl.textContent = `${name}: 失败`;
+                loadEl.title = err.message;
+            }
         }
     }
 
