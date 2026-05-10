@@ -97,6 +97,9 @@ function setUploading(active) {
     if (active) {
         generatedTypes = new Set();
         selectedNotationTypes = new Set();
+        // Reset UI state
+        $$(".notation-option").forEach(o => { o.classList.remove("selected"); o.querySelector("input").checked = false; });
+        btnGenerate.disabled = true;
         btnUpload.disabled = true;
         btnUpload.querySelector(".btn-text").style.display = "none";
         btnUpload.querySelector(".btn-loading").style.display = "flex";
@@ -194,7 +197,9 @@ function updateStemOptions(stems) {
 
 // ===== Notation type selection =====
 $$(".notation-option").forEach((opt) => {
-    opt.addEventListener("click", () => {
+    opt.addEventListener("click", (e) => {
+        // Prevent label's default checkbox toggle — we handle it manually
+        e.preventDefault();
         const cb = opt.querySelector("input");
         cb.checked = !cb.checked;
         opt.classList.toggle("selected", cb.checked);
