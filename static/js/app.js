@@ -222,12 +222,17 @@ btnGenerate.addEventListener("click", async () => {
     const stem = document.querySelector('input[name="stem"]:checked');
     const audioStem = stem ? stem.value : "other";
 
-    setGenerating(true, types.length);
+    setGenerating(true);
+
+    const scoreLinks = $("#score-links");
+    scoreLinks.style.display = "block";
+    scoreLinks.innerHTML = "";
 
     let done = 0;
     for (const ntype of types) {
         const name = NOTATION_NAMES[ntype] || ntype;
         btnGenerate.querySelector(".btn-loading").innerHTML = `<span class="spinner"></span> 生成中 (${done + 1}/${types.length} ${name})…`;
+        scoreLinks.insertAdjacentHTML("beforeend", `<span class="score-link loading" data-type="${ntype}">${name} 生成中…</span>`);
 
         const formData = new FormData();
         formData.append("job_id", currentJobId);
@@ -245,15 +250,21 @@ btnGenerate.addEventListener("click", async () => {
                 throw new Error(errMsg);
             }
             const data = await res.json();
-            window.open(data.score_url, "_blank");
+            const linkEl = scoreLinks.querySelector(`[data-type="${ntype}"]`);
+            linkEl.className = "score-link ready";
+            linkEl.textContent = `📄 ${name}`;
+            linkEl.addEventListener("click", () => window.open(data.score_url, "_blank"));
             done++;
         } catch (err) {
-            showToast(`${name}: ${err.message}`, "error");
+            const linkEl = scoreLinks.querySelector(`[data-type="${ntype}"]`);
+            linkEl.className = "score-link error";
+            linkEl.textContent = `${name}: 失败`;
+            linkEl.title = err.message;
         }
     }
 
     setGenerating(false);
-    if (done > 0) showToast(`已生成 ${done} 种乐谱`, "success");
+    if (done > 0) showToast(`已生成 ${done} 种乐谱，点击下方按钮查看`, "success");
 });
 
 function setGenerating(active) {

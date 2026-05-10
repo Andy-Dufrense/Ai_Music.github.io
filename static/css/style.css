@@ -204,6 +204,43 @@ body {
 .toast.success { background: #27ae60; }
 .toast.info { background: #2980b9; }
 
+/* ===== Score links after generation ===== */
+#score-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+    justify-content: center;
+}
+.score-link {
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.2s;
+    cursor: default;
+}
+.score-link.loading {
+    background: rgba(255,255,255,0.05);
+    color: #666;
+}
+.score-link.ready {
+    background: rgba(233, 69, 96, 0.15);
+    color: #e94560;
+    border: 1px solid rgba(233, 69, 96, 0.3);
+    cursor: pointer;
+}
+.score-link.ready:hover {
+    background: #e94560;
+    color: #fff;
+}
+.score-link.error {
+    background: rgba(192, 57, 43, 0.15);
+    color: #c0392b;
+    border: 1px solid rgba(192, 57, 43, 0.3);
+}
+
 @keyframes fadeIn {
     from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
     to { opacity: 1; transform: translateX(-50%) translateY(0); }
