@@ -20,8 +20,8 @@ def separate_stems(input_path: str, job_id: str) -> dict:
         "-o", job_output_dir,
         "-n", "htdemucs_6s",
         "--device", "cpu",
-        "--shifts", "1",
-        "--overlap", "0.25",
+        "--shifts", "0",
+        "--overlap", "0.1",
         input_path,
     ]
 

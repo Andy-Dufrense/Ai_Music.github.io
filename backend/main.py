@@ -241,6 +241,7 @@ async def generate_score(
     job_id: str = Form(...),
     notation_type: str = Form(...),
     audio_stem: str = Form("other"),
+    fingering: str = Form("auto"),
 ):
     job = jobs.get(job_id)
     if not job:
@@ -257,6 +258,7 @@ async def generate_score(
     key_mode = job.get("key_mode", "major")
     time_sig = job.get("time_signature", [4, 4])
     sections = job.get("sections", [])
+    lyrics_data = job.get("lyrics", {})
 
     # Generate score data
     try:
@@ -277,13 +279,29 @@ async def generate_score(
             score_data = generate_bass_score(bass_path, chords, bpm, key_name, key_mode, time_sig, bass_notes, sections=sections)
         else:
             func = MELODY_BASED_TYPES[notation_type]
-            score_data = func(aligned_notes, chords, bpm, key_name, key_mode, time_sig, sections)
+            # For guitar: generate 2 fingering versions (auto + none) for client-side toggle
+            if notation_type == "guitar":
+                fingering_versions = {}
+                for f in ["auto", "none"]:
+                    fd = func(aligned_notes, chords, bpm, key_name, key_mode, time_sig,
+                              sections, lyrics_data=lyrics_data, fingering=f)
+                    fd["sections"] = sections
+                    lyrics_data_job = job.get("lyrics", {})
+                    if lyrics_data_job:
+                        fd["lyrics"] = lyrics_data_job.get("full_text", "")
+                    fd["_songName"] = job.get("filename", "").replace(".mp3", "").replace(".wav", "")
+                    fingering_versions[f] = fd
+                score_data = fingering_versions["auto"]
+            else:
+                score_data = func(aligned_notes, chords, bpm, key_name, key_mode, time_sig,
+                                  sections, lyrics_data=lyrics_data)
     except HTTPException:
         raise
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"乐谱生成失败: {str(e)}")
+        tb = traceback.format_exc()
+        print(tb)
+        raise HTTPException(500, f"乐谱生成失败 [{notation_type}]: {str(e)}\n\n{tb[-500:]}")
 
     # Attach section info for renderer
     score_data["sections"] = sections
@@ -301,8 +319,9 @@ async def generate_score(
     with open(score_file, "w", encoding="utf-8") as f:
         json.dump(score_data, f, ensure_ascii=False, indent=2)
 
-    # Generate HTML page
-    html = generate_score_html(score_data, audio_stem, job_id)
+    # Generate HTML page (with fingering versions for guitar)
+    html = generate_score_html(score_data, audio_stem, job_id,
+                               fingering_versions=fingering_versions if notation_type == "guitar" else None)
     html_file = os.path.join(OUTPUT_DIR, job_id, f"{notation_type}_score.html")
     with open(html_file, "w", encoding="utf-8") as f:
         f.write(html)
@@ -345,7 +364,8 @@ async def get_stem(job_id: str, stem_name: str):
     return FileResponse(stem_path, media_type="audio/wav")
 
 
-def generate_score_html(score_data: dict, audio_stem: str, job_id: str) -> str:
+def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
+                        fingering_versions: dict = None) -> str:
     """Generate a self-contained HTML page with server-side rendered SVG score."""
 
     song_info = score_data.get("songInfo", {})
@@ -365,7 +385,7 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str) -> str:
     notation_names = {"piano": "钢琴谱", "guitar": "吉他谱", "bass": "贝斯谱", "drums": "架子鼓谱"}
     notation_name = notation_names.get(notation_type, notation_type)
 
-    # Render score — Verovio for piano, custom SVG for guitar/bass/drums
+    # Render score
     from services.svg_renderer import RENDERERS
     renderer = RENDERERS.get(notation_type)
     if renderer:
@@ -378,11 +398,56 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str) -> str:
     else:
         score_content = "<p>不支持的乐谱类型</p>"
 
+    # Render fingering versions for guitar toggle
+    fingering_scores = ""
+    fingering_buttons = ""
+    if fingering_versions and renderer:
+        # Determine which shape auto selected — only show that + original
+        auto_info = fingering_versions.get("auto", {}).get("songInfo", {})
+        auto_fingering = auto_info.get("fingering")  # "C" or "G"
+        show_keys = ["auto", "none"]
+        fingering_labels = {"auto": "简化指法", "C": "C 调指法", "G": "G 调指法", "none": "原始调"}
+        # Rename auto button to indicate which shape
+        if auto_fingering in ("C", "G"):
+            fingering_labels["auto"] = f"{auto_fingering} 调指法"
+        score_divs = []
+        buttons = []
+        for fkey in show_keys:
+            if fkey in fingering_versions:
+                try:
+                    fc = renderer(fingering_versions[fkey])
+                except Exception:
+                    fc = ""
+                disp = "block" if fkey == "auto" else "none"
+                score_divs.append(f'<div class="fingering-score" id="fingering-{fkey}" style="display:{disp}">{fc}</div>')
+                active = " active" if fkey == "auto" else ""
+                buttons.append(f'<button class="btn-fingering{active}" onclick="switchFingering(\'{fkey}\')">{fingering_labels[fkey]}</button>')
+        fingering_scores = "\n".join(score_divs)
+        fingering_buttons = "\n".join(buttons)
+
     # Get lyrics text
     lyrics_text = score_data.get("lyrics", "")
 
     # Get stem path for audio
     audio_url = f"/api/stems/{job_id}/{audio_stem}"
+
+    # Build fingering toggle bar and JS for guitar
+    if fingering_scores:
+        fingering_bar_html = f'<div class="fingering-bar">{fingering_buttons}</div>'
+        score_content_block = fingering_scores
+        fingering_js = """
+function switchFingering(fkey) {
+    document.querySelectorAll('.fingering-score').forEach(function(el) { el.style.display = 'none'; });
+    document.querySelectorAll('.btn-fingering').forEach(function(el) { el.classList.remove('active'); });
+    var scoreEl = document.getElementById('fingering-' + fkey);
+    if (scoreEl) scoreEl.style.display = 'block';
+    var btnEl = document.querySelector('.btn-fingering[onclick*=\"' + fkey + '\"]');
+    if (btnEl) btnEl.classList.add('active');
+}"""
+    else:
+        fingering_bar_html = ""
+        score_content_block = score_content
+        fingering_js = ""
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -452,18 +517,41 @@ body {{
     width: 100%;
     overflow-x: auto;
 }}
+.score-pages svg {{
+    display: block;
+    margin: 0 auto 16px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    border-radius: 2px;
+}}
+@media print {{
+    .audio-bar {{ display: none; }}
+    body {{ background: #fff; color: #000; }}
+    .header {{ background: #f0f0f0; border-bottom-color: #333; }}
+    .score-pages svg {{
+        page-break-after: always;
+        box-shadow: none;
+        margin-bottom: 0;
+    }}
+    .score-pages svg:last-child {{
+        page-break-after: avoid;
+    }}
+}}
 .audio-bar {{
     position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 700px;
+    width: calc(100% - 40px);
     background: #0f3460;
-    border-top: 2px solid #e94560;
-    padding: 16px 30px;
+    border: 2px solid #e94560;
+    border-radius: 12px;
+    padding: 12px 24px;
     display: flex;
     align-items: center;
     gap: 16px;
     z-index: 100;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
 }}
 .audio-bar audio {{
     flex: 1;
@@ -487,10 +575,35 @@ body {{
     font-size: 13px;
     color: #aaa;
 }}
+.fingering-bar {{
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin: 16px 40px 0;
+    flex-wrap: wrap;
+}}
+.btn-fingering {{
+    background: rgba(255,255,255,0.06);
+    color: #aaa;
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 8px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}}
+.btn-fingering:hover {{
+    border-color: #e94560;
+    color: #e94560;
+}}
+.btn-fingering.active {{
+    background: #e94560;
+    color: #fff;
+    border-color: #e94560;
+}}
 @media print {{
-    .audio-bar {{ display: none; }}
-    body {{ background: #fff; color: #000; }}
-    .header {{ background: #f0f0f0; border-bottom-color: #333; }}
+    .fingering-bar {{ display: none; }}
 }}
 </style>
 </head>
@@ -523,12 +636,13 @@ body {{
     <strong>和弦进行:</strong> {chord_summary}
 </div>
 
+{fingering_bar_html}
+
 <div class="score-container">
-    {score_content}
+    {score_content_block}
 </div>
 
 <div class="audio-bar">
-    <span class="label-stem">背景音频</span>
     <audio controls src="{audio_url}"></audio>
     <button class="btn-save" onclick="saveScore()">保存乐谱</button>
 </div>
@@ -546,6 +660,7 @@ function saveScore() {{
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 }}
+{fingering_js}
 </script>
 
 </body>

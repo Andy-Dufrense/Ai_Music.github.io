@@ -369,26 +369,95 @@ def detect_chords_with_bass(y: np.ndarray, sr: int, key_info: dict,
     return detect_chords(y, sr, key_info, beats_per_measure, bass_audio_path)
 
 
-def detect_time_signature(y: np.ndarray, sr: int) -> list:
-    """Estimate time signature using autocorrelation + onset accent analysis.
+def _detect_beat_subdivision(y: np.ndarray, sr: int, beat_times: np.ndarray) -> int:
+    """Analyze onset envelope within each beat to determine subdivision.
 
-    4/4 is the strong default (~90% of pop music). Only switch to 3/4 or 6/8
-    when multiple independent signals agree. This prevents false 3/4 detection
-    on 4/4 songs with strong snare backbeats."""
+    In 6/8, each beat (dotted quarter) subdivides into 3 eighth notes - the onset
+    autocorrelation within the beat shows a peak at 1/3 of the beat duration.
+    In 4/4, each beat subdivides into 2 eighth notes - peak at 1/2.
+
+    Returns 3 for triplet (6/8), 2 for duple (4/4), 0 if inconclusive.
+    """
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=128)
+    onset_times = librosa.frames_to_time(np.arange(len(onset_env)), sr=sr, hop_length=128)
+
+    triplet_votes = 0
+    duple_votes = 0
+
+    for i in range(len(beat_times) - 1):
+        t0, t1 = float(beat_times[i]), float(beat_times[i + 1])
+        dur = t1 - t0
+        if dur < 0.18 or dur > 1.5:
+            continue
+
+        mask = (onset_times >= t0) & (onset_times <= t1)
+        seg = onset_env[mask]
+        n = len(seg)
+        if n < 6:
+            continue
+
+        seg_norm = seg - seg.mean()
+        seg_std = np.std(seg_norm)
+        if seg_std < 1e-8:
+            continue
+        seg_norm /= seg_std
+
+        ac = np.correlate(seg_norm, seg_norm, mode='full')
+        mid = len(ac) // 2
+
+        lag3 = n // 3
+        lag2 = n // 2
+        if lag3 < 2 or lag2 < 2:
+            continue
+
+        score3 = float(ac[mid + lag3]) / max(1, n - lag3)
+        score2 = float(ac[mid + lag2]) / max(1, n - lag2)
+
+        if score3 > score2 * 1.25:
+            triplet_votes += 1
+        elif score2 > score3 * 1.25:
+            duple_votes += 1
+
+    total = triplet_votes + duple_votes
+    if total < 5:
+        return 0
+
+    triplet_ratio = triplet_votes / total
+
+    if triplet_ratio >= 0.55:
+        return 3
+    elif triplet_ratio <= 0.30:
+        return 2
+    return 0
+
+
+def detect_time_signature(y: np.ndarray, sr: int) -> list:
+    """Estimate time signature using beat subdivision + grouping analysis.
+
+    Primary: within-beat onset autocorrelation distinguishes 6/8 (triplet feel)
+    from 4/4 (duple feel). This analyses what happens INSIDE each beat, not how
+    beats group - which is what the human ear uses.
+
+    Secondary: beat-strength grouping distinguishes 3/4 from 4/4.
+    """
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
-    n_beats = len(beats)
-    if n_beats < 8:
+    beat_times = librosa.frames_to_time(beats, sr=sr)
+
+    if len(beats) < 8:
         return [4, 4]
 
+    # ---- Primary: subdivision analysis (6/8 vs duple) ----
+    subdivision = _detect_beat_subdivision(y, sr, beat_times)
+    if subdivision == 3:
+        return [6, 8]
+
+    # ---- Secondary: beat-strength grouping (3/4 vs 4/4) ----
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
     beat_frames = beats[beats < len(onset_env)]
     if len(beat_frames) < 8:
         return [4, 4]
 
     strengths = onset_env[beat_frames].astype(float)
-
-    # Method 1: Autocorrelation of beat strengths
-    # In 3/4, strong beats repeat every 3. In 4/4, every 4.
     strengths_norm = strengths - np.mean(strengths)
     std_s = np.std(strengths_norm)
     if std_s > 1e-8:
@@ -398,14 +467,11 @@ def detect_time_signature(y: np.ndarray, sr: int) -> list:
     autocorr = np.correlate(strengths_norm, strengths_norm, mode='full')
     mid = len(autocorr) // 2
     ac_scores = {}
-    for lag in [2, 3, 4, 6]:
+    for lag in [2, 3, 4]:
         if lag <= max_lag:
-            raw = float(autocorr[mid + lag])
-            # Normalize by (n_beats - lag) to remove bias toward smaller lags
-            ac_scores[lag] = raw / max(1, n_beats - lag)
+            ac_scores[lag] = float(autocorr[mid + lag]) / max(1, len(beats) - lag)
 
-    # Method 2: Z-score of downbeat within each grouping
-    def score_grouping(n):
+    def _score_grouping(n):
         usable = len(strengths) // n * n
         if usable < n * 2:
             return -999.0
@@ -416,35 +482,18 @@ def detect_time_signature(y: np.ndarray, sr: int) -> list:
         z_scores = (groups[:, 0] - group_means) / group_stds
         return float(np.mean(z_scores))
 
-    s2 = score_grouping(2)
-    s3 = score_grouping(3)
-    s4 = score_grouping(4)
-    s6 = score_grouping(6)
-
-    # Default to 4/4 unless 3/4 evidence is overwhelming
-    # Require: s3 > 0.5 AND ac[3] > ac[4] AND s3 > s4 + 0.25
+    s3 = _score_grouping(3)
+    s4 = _score_grouping(4)
     ac3 = ac_scores.get(3, 0)
     ac4 = ac_scores.get(4, 0)
-    ac6 = ac_scores.get(6, 0)
 
-    s3_evidence = (s3 > 0.50 and
-                   ac3 > ac4 * 1.15 and
-                   s3 > s4 + 0.25)
-
-    s6_evidence = (s6 > 0.40 and
-                   ac6 > ac4 * 1.2 and
-                   ac6 > ac3 * 1.1 and
-                   s6 > s4 + 0.20)
-
-    if s6_evidence:
-        return [6, 8]
-    elif s3_evidence:
+    if s3 > 0.30 and ac3 > ac4 * 1.05 and s3 > s4 + 0.10:
         return [3, 4]
-    else:
-        return [4, 4]
+
+    return [4, 4]
 
 
-def analyze_full(audio_path: str, bass_audio_path: str = None, max_duration: float = 180.0) -> dict:
+def analyze_full(audio_path: str, bass_audio_path: str = None, max_duration: float = 600.0) -> dict:
     y, sr = load_audio(audio_path)
 
     # Truncate to first N seconds for faster analysis
@@ -485,7 +534,11 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
 
     beat_dur = 60.0 / bpm
     beats_per_measure = time_sig[0]
-    measure_dur = beat_dur * beats_per_measure
+    denom = time_sig[1]
+    if denom == 8:
+        measure_dur = beat_dur * (beats_per_measure // 3)
+    else:
+        measure_dur = beat_dur * beats_per_measure
 
     # Load vocals and compute per-measure energy
     try:
@@ -514,8 +567,8 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
 
     # Determine threshold for vocal presence
     max_energy = max(measure_energy) if measure_energy else 1
-    # At least 12% of max energy to count as vocal; floor at 5e-4 absolute
-    threshold = max(max_energy * 0.12, 5e-4)
+    # Lower threshold to detect vocals earlier (8% of max, floor at 3e-4)
+    threshold = max(max_energy * 0.08, 3e-4)
 
     # Classify each measure: vocal or instrumental
     is_vocal = [e > threshold for e in measure_energy]
@@ -549,7 +602,7 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
 
         if block_start == 0 and not block_vocal and block_len >= 1:
             # Intro (instrumental opening)
-            intro_end = min(block_end, 8)
+            intro_end = min(block_end, 4)
             sections.append({"start_measure": block_start, "end_measure": intro_end, "label": "前奏"})
             has_intro = True
             if intro_end < block_end:
@@ -559,10 +612,10 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
             if block_len >= 3:
                 block_degrees = chord_degrees[block_start:block_end] if block_start < len(chord_degrees) else []
 
-                # Check if chord pattern matches a previous section
+                # Check if chord pattern matches a previous CHORUS section (repeat detection)
                 is_chorus = False
                 for prev_sec in sections:
-                    if prev_sec["label"] in ("主歌", "副歌"):
+                    if prev_sec["label"] == "副歌":
                         prev_start = prev_sec["start_measure"]
                         prev_end = min(prev_sec["end_measure"], len(chord_degrees))
                         prev_pattern = chord_degrees[prev_start:prev_end]
@@ -582,7 +635,7 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
                     elif has_chorus_before and not has_verse_before:
                         sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
                     else:
-                        # Energy-based: higher energy → chorus
+                        # Energy-based: higher energy → chorus (lowered threshold for subtle dynamics)
                         block_energy = np.mean(measure_energy[block_start:block_end]) if block_start < len(measure_energy) else 0
                         prev_vocal_energy = []
                         for ps in sections:
@@ -590,7 +643,7 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
                                 ps_e = np.mean(measure_energy[ps["start_measure"]:min(ps["end_measure"], len(measure_energy))])
                                 prev_vocal_energy.append(ps_e)
                         avg_prev_energy = np.mean(prev_vocal_energy) if prev_vocal_energy else block_energy
-                        if block_energy > avg_prev_energy * 1.15:
+                        if block_energy > avg_prev_energy * 1.05:
                             sections.append({"start_measure": block_start, "end_measure": block_end, "label": "副歌"})
                         else:
                             sections.append({"start_measure": block_start, "end_measure": block_end, "label": "主歌"})
@@ -616,6 +669,25 @@ def detect_sections(vocals_audio_path: str, chords: list, bpm: float,
                     sections.append({"start_measure": block_start, "end_measure": block_end, "label": "间奏"})
 
         i = block_end
+
+    # Safety net: ensure at least one chorus is detected when we have ≥2 vocal sections
+    vocal_sections_all = [s for s in sections if s["label"] in ("主歌", "副歌")]
+    if len(vocal_sections_all) >= 2 and not any(s["label"] == "副歌" for s in sections):
+        # Label the highest-energy vocal section (after the first) as chorus
+        best_energy = -1
+        best_idx = -1
+        for i, vs in enumerate(vocal_sections_all):
+            if i == 0:
+                continue  # Keep first section as verse
+            vs_start = min(vs["start_measure"], len(measure_energy))
+            vs_end = min(vs["end_measure"], len(measure_energy))
+            if vs_end > vs_start:
+                e = np.mean(measure_energy[vs_start:vs_end])
+                if e > best_energy:
+                    best_energy = e
+                    best_idx = i
+        if best_idx >= 0:
+            vocal_sections_all[best_idx]["label"] = "副歌"
 
     # Post-process: identify bridge (unique chord pattern after verse+chorus)
     vocal_sections = [s for s in sections if s["label"] in ("主歌", "副歌")]

@@ -163,7 +163,7 @@ function showSettings(data) {
 }
 
 function updateStemOptions(stems) {
-    $$(".stem-option").forEach((opt) => {
+    $$("#stem-options .stem-option").forEach((opt) => {
         const val = opt.querySelector("input").value;
         if (stems[val]) {
             opt.style.display = "flex";
@@ -177,7 +177,7 @@ function updateStemOptions(stems) {
     });
 
     // Ensure at least one is selected
-    const visible = [...$$(".stem-option")].filter((o) => o.style.display !== "none");
+    const visible = [...$$("#stem-options .stem-option")].filter((o) => o.style.display !== "none");
     const hasSelected = visible.some((o) => o.classList.contains("selected"));
     if (!hasSelected && visible.length > 0) {
         visible[0].classList.add("selected");
@@ -197,9 +197,9 @@ $$(".notation-option").forEach((opt) => {
 });
 
 // ===== Stem selection =====
-$$(".stem-option").forEach((opt) => {
+$$("#stem-options .stem-option").forEach((opt) => {
     opt.addEventListener("click", () => {
-        $$(".stem-option").forEach((o) => o.classList.remove("selected"));
+        $$("#stem-options .stem-option").forEach((o) => o.classList.remove("selected"));
         opt.classList.add("selected");
         opt.querySelector("input").checked = true;
     });

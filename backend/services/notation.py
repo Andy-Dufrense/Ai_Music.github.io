@@ -18,6 +18,47 @@ from services.common import (CHROMATIC, midi_to_vexnote,
 GUITAR_STRINGS = [64, 59, 55, 50, 45, 40]  # E4, B3, G3, D3, A2, E2
 GUITAR_STRING_NAMES = ["E", "B", "G", "D", "A", "E"]
 
+# Capo fingering shapes
+_FINGERING_SHAPES = {"C": 0, "G": 7}  # MIDI index of shape root
+
+
+def transpose_chord(chord_name: str, semitones: int) -> str:
+    """Transpose a chord name by N semitones (positive = up, negative = down)."""
+    if not chord_name or semitones == 0:
+        return chord_name
+    # Split off bass note (slash chord)
+    bass = ""
+    if "/" in chord_name:
+        chord_name, bass = chord_name.split("/", 1)
+    # Extract root (1-2 chars: C, C#, Db, D, ...)
+    if len(chord_name) >= 2 and chord_name[1] in ("#", "b"):
+        root = chord_name[:2]
+        quality = chord_name[2:]
+    else:
+        root = chord_name[:1]
+        quality = chord_name[1:]
+    root_idx = note_to_chromatic_index(root)
+    new_root = CHROMATIC[(root_idx + semitones) % 12]
+    result = new_root + quality
+    if bass:
+        if len(bass) >= 2 and bass[1] in ("#", "b"):
+            b_root, b_rest = bass[:2], bass[2:]
+        else:
+            b_root, b_rest = bass[:1], bass[1:]
+        b_idx = note_to_chromatic_index(b_root)
+        result += "/" + CHROMATIC[(b_idx + semitones) % 12] + b_rest
+    return result
+
+
+def _calc_capo_fret(key_name: str, fingering: str) -> int:
+    """Calculate capo fret for a given key and fingering shape.
+    Returns capo fret (0-11), or 0 if fingering not applicable."""
+    if not key_name or fingering not in _FINGERING_SHAPES:
+        return 0
+    target = _FINGERING_SHAPES[fingering]
+    orig = note_to_chromatic_index(key_name)
+    return (orig - target + 12) % 12
+
 
 def midi_to_jianpu(midi_val: float, key_root: int) -> tuple:
     """
@@ -108,8 +149,16 @@ def _extract_chord_root(chord_name: str) -> str:
     return note_name_normalized(root)
 
 
+def simplify_chord_name(chord_name: str) -> str:
+    """Strip color tones (sus, add) for guitar display — keep core triad + 7th quality."""
+    import re
+    name = re.sub(r"sus[24]", "", chord_name)
+    name = re.sub(r"add\d+", "", name)
+    return name
+
+
 def _get_bass_pattern(chord_name: str, beats_per_measure: int,
-                      section_label: str, measure_idx: int) -> list:
+                      section_label: str, measure_idx: int, denom: int = 4) -> list:
     """Return list of (midi, duration, beat_offset) for musically valid bass patterns."""
     tones = _bass_midi_notes(chord_name)
     root, third, fifth, octv = tones[0], tones[1], tones[2], tones[3]
@@ -135,8 +184,22 @@ def _get_bass_pattern(chord_name: str, beats_per_measure: int,
         "间奏": [(root, "h.", 0.0)],
         "尾奏": [(root, "h.", 0.0)],
     }
+    patterns_68 = {
+        "前奏": [(root, "h.", 0.0)],
+        "主歌": [(root, "8", 0.0), (fifth, "8", 0.5), (root, "8", 1.0),
+                 (fifth, "8", 1.5), (root, "8", 2.0), (fifth, "8", 2.5)],
+        "副歌": [(root, "q", 0.0), (fifth, "q", 1.5)],
+        "桥段": [(root, "8", 0.0), (fifth, "8", 0.5), (third, "8", 1.0),
+                 (fifth, "8", 1.5), (root, "8", 2.0), (fifth, "8", 2.5)],
+        "间奏": [(root, "h.", 0.0)],
+        "尾奏": [(root, "h.", 0.0)],
+    }
 
-    if n == 3:
+    if denom == 8:
+        patterns = patterns_68
+        default = [(root, "8", 0.0), (fifth, "8", 0.5), (root, "8", 1.0),
+                   (fifth, "8", 1.5), (root, "8", 2.0), (fifth, "8", 2.5)]
+    elif n == 3:
         patterns = patterns_3
         default = [(root, "q", 0.0), (fifth, "q", 1.0), (root, "q", 2.0)]
     elif n == 2:
@@ -156,15 +219,11 @@ def _get_bass_pattern(chord_name: str, beats_per_measure: int,
 
 
 def _get_left_hand_voicing(chord_name: str, beats_per_measure: int,
-                            section_label: str, measure_idx: int) -> list:
+                            section_label: str, measure_idx: int, denom: int = 4) -> list:
     """Return broken-chord arpeggios for piano left hand (bass clef).
 
     Each note is a single key — arpeggiated, not block chords.
-    Section-aware patterns:
-    - 前奏/尾奏: sparse single-note or simple broken pattern
-    - 主歌: Alberti-style (root-5th-3rd-5th) or simple arpeggio
-    - 副歌: fuller broken chords (root-3rd-5th-3rd / root-5th-octave-5th)
-    - 桥段/间奏: simple broken chord
+    Section-aware patterns.
     """
     tones = _bass_midi_notes(chord_name)
     root, third, fifth, octv = tones[0], tones[1], tones[2], tones[3]
@@ -172,39 +231,35 @@ def _get_left_hand_voicing(chord_name: str, beats_per_measure: int,
 
     vn = lambda m: [midi_to_vexnote(m)]
 
-    if n >= 4:
+    # x/8 time signatures: 6/8, 9/8, 12/8 — eighth-note based patterns
+    if denom == 8:
         if section_label in ("前奏", "尾奏"):
-            # Sparse: held root with occasional fifth
-            return [
-                {"keys": vn(root), "duration": "w", "dots": 0},
-            ]
+            return [{"keys": vn(root), "duration": "h", "dots": 1}]  # dotted half
         elif section_label == "副歌":
-            # Full arpeggio: root → 3rd → 5th → octave
             return [
-                {"keys": vn(root), "duration": "q", "dots": 0},
-                {"keys": vn(third), "duration": "q", "dots": 0},
-                {"keys": vn(fifth), "duration": "q", "dots": 0},
-                {"keys": vn(octv), "duration": "q", "dots": 0},
+                {"keys": vn(root), "duration": "8", "dots": 0},
+                {"keys": vn(third), "duration": "8", "dots": 0},
+                {"keys": vn(fifth), "duration": "8", "dots": 0},
+                {"keys": vn(third), "duration": "8", "dots": 0},
+                {"keys": vn(fifth), "duration": "8", "dots": 0},
+                {"keys": vn(octv), "duration": "8", "dots": 0},
             ]
         elif section_label == "桥段":
-            # Broken: root → 3rd-5th → root → 3rd-5th
-            return [
-                {"keys": vn(root), "duration": "q", "dots": 0},
-                {"keys": vn(fifth), "duration": "q", "dots": 0},
-                {"keys": vn(root), "duration": "q", "dots": 0},
-                {"keys": vn(fifth), "duration": "q", "dots": 0},
-            ]
-        elif section_label == "间奏":
-            # Simple held root
-            return [{"keys": vn(root), "duration": "w", "dots": 0}]
-        else:
-            # 主歌: Alberti-style broken chord (root-5th-3rd-5th)
             return [
                 {"keys": vn(root), "duration": "8", "dots": 0},
                 {"keys": vn(fifth), "duration": "8", "dots": 0},
                 {"keys": vn(third), "duration": "8", "dots": 0},
                 {"keys": vn(fifth), "duration": "8", "dots": 0},
                 {"keys": vn(root), "duration": "8", "dots": 0},
+                {"keys": vn(fifth), "duration": "8", "dots": 0},
+            ]
+        elif section_label == "间奏":
+            return [{"keys": vn(root), "duration": "h", "dots": 1}]
+        else:
+            return [
+                {"keys": vn(root), "duration": "8", "dots": 0},
+                {"keys": vn(fifth), "duration": "8", "dots": 0},
+                {"keys": vn(third), "duration": "8", "dots": 0},
                 {"keys": vn(fifth), "duration": "8", "dots": 0},
                 {"keys": vn(third), "duration": "8", "dots": 0},
                 {"keys": vn(fifth), "duration": "8", "dots": 0},
@@ -217,17 +272,21 @@ def _get_left_hand_voicing(chord_name: str, beats_per_measure: int,
             {"keys": vn(fifth), "duration": "q", "dots": 0},
         ]
     elif n == 2:
-        # Simple: root → fifth
         return [
             {"keys": vn(root), "duration": "q", "dots": 0},
             {"keys": vn(fifth), "duration": "q", "dots": 0},
         ]
-    else:  # 6/8
+    else:
+        # 4/4: Alberti-style broken chord
         return [
-            {"keys": vn(root), "duration": "q", "dots": 0},
-            {"keys": vn(third), "duration": "q", "dots": 0},
-            {"keys": vn(fifth), "duration": "q", "dots": 0},
-            {"keys": vn(octv), "duration": "q", "dots": 0},
+            {"keys": vn(root), "duration": "8", "dots": 0},
+            {"keys": vn(fifth), "duration": "8", "dots": 0},
+            {"keys": vn(third), "duration": "8", "dots": 0},
+            {"keys": vn(fifth), "duration": "8", "dots": 0},
+            {"keys": vn(root), "duration": "8", "dots": 0},
+            {"keys": vn(fifth), "duration": "8", "dots": 0},
+            {"keys": vn(third), "duration": "8", "dots": 0},
+            {"keys": vn(fifth), "duration": "8", "dots": 0},
         ]
 
 
@@ -314,19 +373,22 @@ def _chord_tone_below_melody(chord_name: str, melody_midi: int) -> Optional[int]
     return candidates[0][1] if candidates else None
 
 
-def _right_hand_fill(chord_name: str, beats_per_measure: int, section_label: str, key_root: int) -> list:
-    """Generate dense 2-note chord voicings for measures without vocal.
-    Uses eighth-note pairs (root+third, fifth+root, etc.) that fill the staff richly.
-    Two-note voicings double the visible note heads for a fuller score appearance."""
+def _right_hand_fill(chord_name: str, beats_per_measure: int, section_label: str, key_root: int, denom: int = 4) -> list:
+    """Generate chord-tone fill for measures without vocal melody.
+    Mostly single notes with occasional double/triple notes for emphasis."""
     tones = _bass_midi_notes(chord_name)
     # Shift to treble clef range (C4-C6): +24 puts root at C5
     r, th, f, o = tones[0] + 24, tones[1] + 24, tones[2] + 24, tones[3] + 24
     vn = midi_to_vexnote
     n = beats_per_measure
 
-    def _pair(midi_a, midi_b, dur="8", dots=0):
-        """Two-note chord voicing: both notes played together as one event."""
-        keys = sorted([vn(midi_a), vn(midi_b)])  # lower first
+    def _single(midi_val, dur="q", dots=0):
+        degree, accidental, oct_shift = midi_to_jianpu(midi_val, key_root)
+        return {"keys": [vn(midi_val)], "duration": dur, "dots": dots, "lyric": "",
+                "jianpu": {"degree": degree, "accidental": accidental, "octaveShift": oct_shift}}
+
+    def _pair(midi_a, midi_b, dur="q", dots=0):
+        keys = sorted([vn(midi_a), vn(midi_b)])
         top = max(midi_a, midi_b)
         degree, accidental, oct_shift = midi_to_jianpu(top, key_root)
         return {"keys": keys, "duration": dur, "dots": dots, "lyric": "",
@@ -339,39 +401,59 @@ def _right_hand_fill(chord_name: str, beats_per_measure: int, section_label: str
         return {"keys": keys, "duration": dur, "dots": dots, "lyric": "",
                 "jianpu": {"degree": degree, "accidental": accidental, "octaveShift": oct_shift}}
 
-    if n >= 4:
-        # 4 beats → 4 quarter-note chord voicings, each with 2-3 notes
-        if section_label in ("前奏", "尾奏"):
-            # Soft: spread voicings
+    if denom == 8:
+        # 6/8: 6 eighth notes — mostly single, pair on strong beats
+        if section_label == "副歌":
             return [
-                _pair(r, th, "q"), _pair(f, o, "q"),
-                _pair(th, f, "q"), _pair(r, th, "q"),
+                _pair(r, th, "8"), _single(f, "8"), _single(th, "8"),
+                _pair(r, th, "8"), _single(f, "8"), _single(th, "8"),
             ]
-        elif section_label == "间奏":
-            # Active: brighter voicings
+        elif section_label in ("前奏", "尾奏"):
             return [
-                _pair(r, f, "q"), _pair(th, o, "q"),
-                _triad(r, f, o, "q"), _pair(th, f, "q"),
-            ]
-        elif section_label == "副歌":
-            # Chorus: full triads for power
-            return [
-                _triad(r, th, f, "q"), _triad(f, o, th + 12, "q"),
-                _triad(r, th, f, "q"), _triad(f, o, th + 12, "q"),
+                _single(r, "8"), _single(th, "8"), _single(f, "8"),
+                _single(r, "8"), _single(th, "8"), _single(f, "8"),
             ]
         else:
-            # Verse/main: standard broken chord pairs
             return [
-                _pair(r, th, "q"), _pair(f, r + 12, "q"),
-                _pair(o, f, "q"), _pair(th, r, "q"),
+                _pair(r, th, "8"), _single(f, "8"), _single(th, "8"),
+                _single(r, "8"), _single(f, "8"), _single(th, "8"),
             ]
     elif n == 3:
-        return [_pair(r, th, "q"), _pair(f, r + 12, "q"), _pair(th, f, "q")]
+        # 3/4: 3 quarter notes — single with 1 pair on beat 1
+        if section_label == "副歌":
+            return [_pair(r, th, "q"), _single(f, "q"), _single(th, "q")]
+        elif section_label in ("前奏", "尾奏", "间奏"):
+            return [_single(r, "q"), _single(f, "q"), _single(th, "q")]
+        else:
+            return [_pair(r, th, "q"), _single(f, "q"), _single(th, "q")]
     elif n == 2:
-        return [_triad(r, th, f, "q"), _triad(f, o, th + 12, "q")]
-    else:  # 6/8
-        return [_pair(r, th, "q"), _pair(f, o, "q"), _pair(th, f, "q"),
-                _pair(r, th, "q"), _pair(f, o, "q"), _pair(th, f, "q")]
+        # 2/4: 2 quarter notes
+        if section_label == "副歌":
+            return [_pair(r, th, "q"), _pair(f, r + 12, "q")]
+        else:
+            return [_single(r, "q"), _single(f, "q")]
+    else:
+        # 4/4: 4 quarter notes — mostly single, pairs on strong beats
+        if section_label in ("前奏", "尾奏"):
+            return [
+                _single(r, "q"), _single(f, "q"),
+                _single(th, "q"), _single(r, "q"),
+            ]
+        elif section_label == "间奏":
+            return [
+                _single(r, "q"), _single(f, "q"),
+                _pair(th, f, "q"), _single(r, "q"),
+            ]
+        elif section_label == "副歌":
+            return [
+                _pair(r, th, "q"), _single(f, "q"),
+                _pair(r, th, "q"), _single(f, "q"),
+            ]
+        else:
+            return [
+                _pair(r, th, "q"), _single(f, "q"),
+                _single(th, "q"), _single(r, "q"),
+            ]
 
 
 def generate_piano_score(melody_notes: list, chords: list, bpm: float, key_name: str,
@@ -392,8 +474,13 @@ def generate_piano_score(melody_notes: list, chords: list, bpm: float, key_name:
 
     key_root = note_to_chromatic_index(key_name)
     beats_per_measure = time_sig[0]
+    denom = time_sig[1]
     beat_dur = 60.0 / bpm
-    measure_dur = beat_dur * beats_per_measure
+    # For x/8, BPM is in dotted quarters; measure has (numerator/3) dotted quarters
+    if denom == 8:
+        measure_dur = beat_dur * (beats_per_measure // 3)
+    else:
+        measure_dur = beat_dur * beats_per_measure
 
     measures = []
     note_idx = 0
@@ -416,31 +503,36 @@ def generate_piano_score(melody_notes: list, chords: list, bpm: float, key_name:
         # === Treble clef: always filled, beat-by-beat ===
         # Strategy: generate a full measure of fill notes, then overlay melody
         # on top where it exists. This guarantees every beat is filled.
-        treble_notes = _right_hand_fill(chord_name, beats_per_measure, sec_label, key_root)
+        treble_notes = _right_hand_fill(chord_name, beats_per_measure, sec_label, key_root, denom)
 
         if meas_melody:
             # Map melody notes by approximate beat position, then overlay
             # onto the fill backdrop: replace the nearest fill note's pitch
             # with melody pitch, keeping the fill's duration structure
             beat_dur = 60.0 / bpm
-            m_start = measure_idx * beat_dur * beats_per_measure
+            m_start = measure_idx * measure_dur
             fill_beats = [0.0]
             for fn in treble_notes:
                 fb = dur_to_beats(fn["duration"])
                 fill_beats.append(fill_beats[-1] + fb)
 
+            claimed_slots = set()  # Track which fill slots already have a melody note
+            original_fill_count = len(treble_notes)  # freeze: only match original fill slots
             for note in meas_melody:
                 beat_pos = (note["time"] - m_start) / beat_dur
                 # Find the fill note whose beat position is closest
                 best_i = -1
                 best_d = float("inf")
-                for fi in range(len(treble_notes)):
+                for fi in range(original_fill_count):
+                    if fi in claimed_slots:
+                        continue
                     fb = fill_beats[fi]
                     d = abs(fb - beat_pos)
                     if d < best_d and d < 0.75:  # Within 3/4 beat
                         best_d = d
                         best_i = fi
                 if best_i >= 0:
+                    claimed_slots.add(best_i)
                     midi_val = int(round(note["midi"]))
                     chord_tone = _chord_tone_below_melody(chord_name, midi_val)
                     keys = [midi_to_vexnote(midi_val)]
@@ -452,6 +544,7 @@ def generate_piano_score(melody_notes: list, chords: list, bpm: float, key_name:
                         jianpu = {"degree": degree, "accidental": accidental, "octaveShift": oct_shift}
                     treble_notes[best_i]["keys"] = keys
                     treble_notes[best_i]["jianpu"] = jianpu
+                    treble_notes[best_i]["lyric"] = note.get("lyric", "")
                 else:
                     # Melody note falls between fill beats: add as extra note
                     dur_info = quantize_duration_dict(note["duration"], bpm)
@@ -468,17 +561,17 @@ def generate_piano_score(melody_notes: list, chords: list, bpm: float, key_name:
                         "keys": keys,
                         "duration": dur_info["duration"],
                         "dots": dur_info["dots"],
-                        "lyric": "",
+                        "lyric": note.get("lyric", ""),
                         "jianpu": jianpu,
                     })
 
         # Failsafe
         if not treble_notes:
-            treble_notes = _right_hand_fill(chord_name, beats_per_measure, sec_label, key_root)
+            treble_notes = _right_hand_fill(chord_name, beats_per_measure, sec_label, key_root, denom)
 
         # === Bass clef: chord voicings ===
         bass_notes = _get_left_hand_voicing(chord_name, beats_per_measure,
-                                             sec_label, measure_idx)
+                                             sec_label, measure_idx, denom)
         measures.append({
             "index": measure_idx,
             "trebleNotes": treble_notes,
@@ -509,6 +602,17 @@ def _get_chord_fingering(chord_name: str) -> list:
     """
     root_name = _extract_chord_root(chord_name)
 
+    # Normalize flat root names to sharp for dict lookup (e.g. "Abm7" → "G#m7")
+    for i, ch in enumerate(chord_name):
+        if ch in "ABCDEFG":
+            if i + 1 < len(chord_name) and chord_name[i + 1] in "#b":
+                orig_root = chord_name[i:i + 2]
+            else:
+                orig_root = ch
+            if orig_root != root_name:
+                chord_name = root_name + chord_name[i + len(orig_root):]
+            break
+
     # Format: 6 strings from low E (6) to high E (1), -1=muted, 0=open
     s = lambda s6, s5, s4, s3, s2, s1: [
         {"str": 6, "fret": s6}, {"str": 5, "fret": s5}, {"str": 4, "fret": s4},
@@ -531,17 +635,21 @@ def _get_chord_fingering(chord_name: str) -> list:
         # ===== E指型横按 大调 (root on 6th, pattern: N,N+2,N+2,N+1,N,N) =====
         "F#":  s(  2, 4, 4, 3, 2, 2),
         "G#":  s(  4, 6, 6, 5, 4, 4),
-        "Bb":  s(  6, 8, 8, 7, 6, 6),
-        "B":   s(  7, 9, 9, 8, 7, 7),
+
+        # ===== A指型横按 大调 - lower barre than E-shape for these roots =====
+        "Bb":  s( -1, 1, 3, 3, 3, 1),  # A-shape at 1 (was E-shape at 6)
+        "B":   s( -1, 2, 4, 4, 4, 2),  # A-shape at 2 (was E-shape at 7)
 
         # ===== E指型横按 小调 (root on 6th, pattern: N,N+2,N+2,N,N,N) =====
-        "Cm":  s(  8,10,10, 8, 8, 8),
         "Fm":  s(  1, 3, 3, 1, 1, 1),
         "F#m": s(  2, 4, 4, 2, 2, 2),
         "Gm":  s(  3, 5, 5, 3, 3, 3),
         "G#m": s(  4, 6, 6, 4, 4, 4),
-        "Bbm": s(  6, 8, 8, 6, 6, 6),
-        "Bm":  s(  7, 9, 9, 7, 7, 7),
+
+        # ===== Am指型横按 小调 - lower barre than E-shape for these roots =====
+        "Cm":  s( -1, 3, 5, 5, 4, 3),  # Am-shape at 3 (was E-shape at 8)
+        "Bbm": s( -1, 1, 3, 3, 2, 1),  # Am-shape at 1 (was E-shape at 6)
+        "Bm":  s( -1, 2, 4, 4, 3, 2),  # Am-shape at 2 (was E-shape at 7)
 
         # ===== A指型横按 大调 (root on 5th, pattern: x,N,N+2,N+2,N+2,N) =====
         "C#":  s( -1, 4, 6, 6, 6, 4),
@@ -576,24 +684,34 @@ def _get_chord_fingering(chord_name: str) -> list:
         "Dmaj7": s(-1,-1, 0, 2, 2, 2),  # xx0222
         "Emaj7": s( 0, 2, 1, 1, 0, 0),  # 021100
 
-        # ===== minor 7th open chords =====
+        # ===== minor 7th chords =====
         "Dm7":  s(-1,-1, 0, 2, 1, 1),   # xx0211
         "Em7":  s( 0, 2, 0, 0, 0, 0),   # 020000
         "Am7":  s(-1, 0, 2, 0, 1, 0),   # x02010
         "Bm7":  s(-1, 2, 0, 2, 0, 2),   # x20202
+
+        # ===== barre m7 chords =====
+        "Cm7":  s(-1, 3, 5, 3, 4, 3),   # Am7-shape at 3: x35343
+        "Fm7":  s( 1, 3, 1, 1, 1, 1),   # Em7-shape at 1: 131111
+        "Gm7":  s( 3, 5, 3, 3, 3, 3),   # Em7-shape at 3: 353333
+
+        # ===== barre maj7 chords =====
+        "Bmaj7": s(-1, 2, 4, 3, 4, 2),  # Amaj7-shape at 2: x24342
 
         # ===== Diminished =====
         "Bdim": s(-1, 2, 0, 1, 0, 1),   # x20101
         "Ddim": s(-1,-1, 0, 1, 0, 1),   # xx0101
     }
 
-    # Try full chord name first, then root name
-    result = basic_chords.get(chord_name) or basic_chords.get(root_name)
+    # Try full chord name first; only fall back to root name for plain major chords
+    result = basic_chords.get(chord_name)
+    if not result and chord_name == root_name:
+        result = basic_chords.get(root_name)
     if result:
         return result
 
-    # Algorithmic fallback: build barre chords using E-shape and A-shape patterns.
-    # Compute barre position from root note relative to string tuning.
+    # Algorithmic fallback: try both E-shape (root on string 6) and A-shape (root on string 5)
+    # barre patterns and pick the lower valid barre fret.
     try:
         root_chromatic = CHROMATIC.index(root_name)
     except ValueError:
@@ -601,41 +719,109 @@ def _get_chord_fingering(chord_name: str) -> list:
 
     is_minor = "m" in chord_name and "maj" not in chord_name
     is_seventh = "7" in chord_name
+    is_maj7 = "maj7" in chord_name
     is_dim = "dim" in chord_name
 
-    # E-shape: root on string 6 (low E). Find barre fret where string 6 = root.
-    # GUITAR_STRINGS[5] = 40 (E2). Root in octave 2-3 range.
-    root_midi_6 = root_chromatic + 40  # Place root around E2 octave on string 6
-    while root_midi_6 < 40:
-        root_midi_6 += 12
-    barre = root_midi_6 - 40  # Fret on string 6
+    # Compute E-shape barre: root on string 6 (E = MIDI 40, 40%12 = 4)
+    barre_e = (root_chromatic - 4) % 12  # fret on string 6 for this root
+    barre_e = barre_e or 12  # open string → 12th fret (open handled by basic_chords)
 
-    if barre < 0 or barre > 15:
-        # Try A-shape: root on string 5 (A, MIDI 45)
-        root_midi_5 = root_chromatic + 45
-        while root_midi_5 < 45:
-            root_midi_5 += 12
-        barre = root_midi_5 - 45
+    # Compute A-shape barre: root on string 5 (A = MIDI 45, 45%12 = 9)
+    barre_a = (root_chromatic - 9) % 12  # fret on string 5 for this root
+    barre_a = barre_a or 12
 
-    barre = max(0, min(15, barre))
+    # Pick the lower barre in practical range (1-12)
+    candidates = []
+    if 1 <= barre_e <= 12:
+        candidates.append(("E", barre_e))
+    if 1 <= barre_a <= 12:
+        candidates.append(("A", barre_a))
+    if not candidates:
+        barre = max(1, min(12, barre_e))
+        shape = "E"
+    else:
+        shape, barre = min(candidates, key=lambda x: x[1])
 
     if is_dim:
-        return [{"str": 6, "fret": barre},
-                {"str": 5, "fret": -1}, {"str": 4, "fret": -1},
-                {"str": 3, "fret": barre + 1},
-                {"str": 2, "fret": -1}, {"str": 1, "fret": barre}]
+        if shape == "A":
+            return [
+                {"str": 6, "fret": -1}, {"str": 5, "fret": barre},      # root
+                {"str": 4, "fret": barre + 1}, {"str": 3, "fret": barre + 2},  # ♭5, ♭3
+                {"str": 2, "fret": barre + 1}, {"str": 1, "fret": barre},      # root, 5th
+            ]
+        else:
+            return [
+                {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 1},  # root, ♭5
+                {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre},  # ♭3, 5th
+                {"str": 2, "fret": barre}, {"str": 1, "fret": barre},      # root, ♭3
+            ]
+    elif is_maj7:
+        if shape == "A":
+            return [
+                {"str": 6, "fret": -1}, {"str": 5, "fret": barre},
+                {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre + 1},
+                {"str": 2, "fret": barre + 2}, {"str": 1, "fret": barre},
+            ]
+        else:
+            return [
+                {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 2},
+                {"str": 4, "fret": barre + 1}, {"str": 3, "fret": barre},
+                {"str": 2, "fret": barre}, {"str": 1, "fret": barre},
+            ]
+    elif is_seventh:
+        if shape == "A":
+            if is_minor:
+                return [
+                    {"str": 6, "fret": -1}, {"str": 5, "fret": barre},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre},
+                    {"str": 2, "fret": barre + 1}, {"str": 1, "fret": barre},
+                ]
+            else:
+                return [
+                    {"str": 6, "fret": -1}, {"str": 5, "fret": barre},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre},
+                    {"str": 2, "fret": barre + 2}, {"str": 1, "fret": barre},
+                ]
+        else:
+            if is_minor:
+                return [
+                    {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 2},
+                    {"str": 4, "fret": barre}, {"str": 3, "fret": barre},
+                    {"str": 2, "fret": barre}, {"str": 1, "fret": barre},
+                ]
+            else:
+                return [
+                    {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 2},
+                    {"str": 4, "fret": barre}, {"str": 3, "fret": barre + 1},
+                    {"str": 2, "fret": barre}, {"str": 1, "fret": barre},
+                ]
     else:
-        # E-shape: M: N,N+2,N+2,N+1,N,N / m: N,N+2,N+2,N,N,N
-        third_off = 3 if is_minor else 4
-        seventh_off = 2 if is_seventh else None
-        return [
-            {"str": 6, "fret": barre},
-            {"str": 5, "fret": barre + 2},
-            {"str": 4, "fret": barre + 2},
-            {"str": 3, "fret": barre + (seventh_off if seventh_off is not None else 1)},
-            {"str": 2, "fret": barre},
-            {"str": 1, "fret": barre},
-        ]
+        if shape == "A":
+            if is_minor:
+                return [
+                    {"str": 6, "fret": -1}, {"str": 5, "fret": barre},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre + 2},
+                    {"str": 2, "fret": barre + 1}, {"str": 1, "fret": barre},
+                ]
+            else:
+                return [
+                    {"str": 6, "fret": -1}, {"str": 5, "fret": barre},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre + 2},
+                    {"str": 2, "fret": barre + 2}, {"str": 1, "fret": barre},
+                ]
+        else:
+            if is_minor:
+                return [
+                    {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 2},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre},
+                    {"str": 2, "fret": barre}, {"str": 1, "fret": barre},
+                ]
+            else:
+                return [
+                    {"str": 6, "fret": barre}, {"str": 5, "fret": barre + 2},
+                    {"str": 4, "fret": barre + 2}, {"str": 3, "fret": barre + 1},
+                    {"str": 2, "fret": barre}, {"str": 1, "fret": barre},
+                ]
 
 
 def _get_picking_pattern(chord_name: str, beats_per_measure: int, denom: int) -> list:
@@ -649,10 +835,10 @@ def _get_picking_pattern(chord_name: str, beats_per_measure: int, denom: int) ->
     n = beats_per_measure
 
     if denom == 8:
-        # 6/8: T-3-2-1-2-3 (6 eighth notes)
+        # 6/8: T-3-2-1-2-3 (6 eighth notes across 2 dotted-quarter beats)
         return [
-            (root_str, "8", 0.0), (3, "8", 0.5), (2, "8", 1.0),
-            (1, "8", 1.5), (2, "8", 2.0), (3, "8", 2.5),
+            (root_str, "8", 0.0), (3, "8", 1/3), (2, "8", 2/3),
+            (1, "8", 1.0), (2, "8", 4/3), (3, "8", 5/3),
         ]
     elif n == 2:
         # 2/4: T-3-2-1 (4 eighth notes)
@@ -682,16 +868,18 @@ _GUITAR_STRUM_PATTERNS = {
         (2.0,"down"), (3.0,"down"), (3.5,"down"), (3.75,"up"),
     ],
     "3/4": [
-        (0.0,"down"), (1.0,"down"), (1.5,"down"), (1.75,"up"),
-        (2.0,"down"), (2.5,"up"),
+        # q↓ + e↓,e↑ + q↓
+        (0.0,"down"), (1.0,"down"), (1.5,"up"),
+        (2.0,"down"),
     ],
     "2/4": [
         # Half of 4/4 pattern: q↓ + e↓ + s↓↑
         (0.0,"down"), (1.0,"down"), (1.5,"down"), (1.75,"up"),
     ],
     "6/8": [
-        (0.0,"down"), (1.5,"down"),
-        (3.0,"down"), (3.5,"down"), (3.75,"up"), (4.5,"up"),
+        # q↓ + e↓,e↑ + e↓,e↑ (quarter + two eighth-note pairs)
+        (0.0,"down"), (2/3,"down"), (1.0,"up"),
+        (4/3,"down"), (5/3,"up"),
     ],
 }
 
@@ -723,15 +911,59 @@ def _get_chord_root_string(chord_name: str) -> int:
 
 
 def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name: str,
-                          key_mode: str, time_sig: list, sections: list = None) -> dict:
+                          key_mode: str, time_sig: list, sections: list = None,
+                          lyrics_data: dict = None, fingering: str = "none") -> dict:
     """Generate guitar tab with chord accompaniment + lyrics + jianpu.
 
-    - Each measure: chord for accompaniment (picking or strumming)
-    - Lyrics from melody_notes, placed above the TAB with jianpu numbers above them
-    - 舒缓(主歌/前奏/尾奏) → 分解(picking) | 激昂(副歌/桥段) → 扫弦(strumming)
+    Lyrics are placed by their Whisper timestamps — each character lands in the
+    measure/beat where it actually occurs in the song. Melody notes are used
+    only to look up pitch for jianpu numbers.
+
+    fingering: "none" (original key), "C" (C-shape), "G" (G-shape), or "auto"
     """
     if sections is None:
         sections = []
+
+    # ---- Fingering / capo ----
+    original_key = key_name
+    capo_fret = None
+    tuning_semitones = None  # negative = tune down, positive = tune up (capo alternative)
+    if fingering and fingering != "none" and key_name:
+        if fingering == "auto":
+            orig_idx = note_to_chromatic_index(key_name)
+            # C-shape: keys C(0) through F(5), G-shape: F#(6) through B(11)
+            if 0 <= orig_idx <= 5:
+                fingering = "C"
+            else:
+                fingering = "G"
+        raw_capo = _calc_capo_fret(key_name, fingering)
+        if raw_capo > 0:
+            orig_idx = note_to_chromatic_index(key_name)
+            if raw_capo > 6:
+                # Impractical capo — use tuning adjustment instead
+                # Tune down by (12 - raw_capo) semitones, transpose chords UP to shape key
+                tuning_semitones = -(12 - raw_capo)
+                shift = -tuning_semitones  # positive: transpose up to shape key
+                capo_fret = None
+                transposed = []
+                for c in chords:
+                    tc = dict(c)
+                    tc["chord"] = transpose_chord(c.get("chord", ""), shift)
+                    transposed.append(tc)
+                chords = transposed
+                key_name = CHROMATIC[(orig_idx + shift) % 12]
+            else:
+                # Normal capo: transpose chords down, capo brings pitch back up
+                capo_fret = raw_capo
+                transposed = []
+                for c in chords:
+                    tc = dict(c)
+                    tc["chord"] = transpose_chord(c.get("chord", ""), -capo_fret)
+                    transposed.append(tc)
+                chords = transposed
+                key_name = CHROMATIC[(orig_idx - capo_fret + 12) % 12]
+    # Simplify chord names for display (strip sus2, sus4, add9)
+    chords = [dict(c, chord=simplify_chord_name(c.get("chord", ""))) for c in chords]
 
     sec_map = {}
     for sec in sections:
@@ -742,7 +974,10 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
     beats_per_measure = time_sig[0]
     denom = time_sig[1]
     beat_dur = 60.0 / bpm
-    measure_dur = beat_dur * beats_per_measure
+    if denom == 8:
+        measure_dur = beat_dur * (beats_per_measure // 3)
+    else:
+        measure_dur = beat_dur * beats_per_measure
 
     # Categorize time signature
     if denom == 4 and beats_per_measure == 2:
@@ -754,32 +989,62 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
     else:
         ts_cat = "4/4"
 
-    # Distribute melody notes (with lyrics) into measures
-    meas_lyrics = {}  # measure_idx → [{lyric, midi, beatOffset}]
-    note_idx = 0
-    for mi in range(len(chords)):
-        m_start = mi * measure_dur
-        m_end = m_start + measure_dur
-        raw_lyrics = []
-        while note_idx < len(melody_notes) and melody_notes[note_idx]["time"] < m_end:
-            note = melody_notes[note_idx]
-            if note["time"] >= m_start and note.get("lyric", ""):
-                beat_pos = (note["time"] - m_start) / beat_dur
-                raw_lyrics.append({
-                    "lyric": note["lyric"],
-                    "midi": int(round(note.get("midi", 60))),
-                    "beatOffset": beat_pos,
-                    "duration": note.get("duration", 0.5),
-                })
-            note_idx += 1
+    # Build melody lookup: time → midi for pitch reference
+    melody_by_time = sorted(melody_notes, key=lambda n: n["time"]) if melody_notes else []
 
-        # Deduplicate: ensure no two lyrics land on the same 16th-note position
+    def _lookup_midi(target_time: float) -> int:
+        """Find closest melody note pitch within a 2-beat window."""
+        best_midi = 60
+        best_dist = float("inf")
+        for n in melody_by_time:
+            d = abs(n["time"] - target_time)
+            if d < best_dist and d < beat_dur * 2:
+                best_dist = d
+                best_midi = int(round(n.get("midi", 60)))
+            elif n["time"] > target_time + beat_dur * 2:
+                break
+        return best_midi
+
+    # Place lyrics by character timestamps from Whisper (not melody note times)
+    meas_lyrics = {}  # measure_idx → [{lyric, midi, beatOffset}]
+    raw_by_measure = {}  # measure_idx → [{lyric, midi, beatOffset}]
+
+    if lyrics_data:
+        from services.lyrics import _split_characters
+        # Find where vocals start from section info (for filtering hallucinated early words)
+        vocal_start_measure = 999
+        if sections:
+            for sec in sections:
+                if sec["label"] in ("主歌", "副歌", "桥段"):
+                    vocal_start_measure = min(vocal_start_measure, sec["start_measure"])
+        chars = _split_characters(lyrics_data.get("words", []))
+        for ch in chars:
+            char_t = (ch["start"] + ch["end"]) / 2
+            mi = int(char_t / measure_dur)
+            if 0 <= mi < len(chords):
+                # Skip instrumental sections — these are Whisper hallucinations from noise
+                sl = sec_map.get(mi, "")
+                if sl in ("前奏", "间奏", "尾奏"):
+                    continue
+                # Skip characters before the first vocal section
+                if mi < vocal_start_measure:
+                    continue
+                beat_pos = (char_t - mi * measure_dur) / beat_dur
+                if 0 <= beat_pos < beats_per_measure:
+                    midi = _lookup_midi(char_t)
+                    raw_by_measure.setdefault(mi, []).append({
+                        "lyric": ch["word"],
+                        "midi": midi,
+                        "beatOffset": beat_pos,
+                    })
+
+    # Deduplicate within each measure on 16th-note grid
+    for mi in range(len(chords)):
+        raw = raw_by_measure.get(mi, [])
         meas_lyrics[mi] = []
         used_slots = set()
-        for ln in sorted(raw_lyrics, key=lambda x: x["beatOffset"]):
-            # Snap to 16th-note grid
+        for ln in sorted(raw, key=lambda x: x["beatOffset"]):
             slot = round(ln["beatOffset"] * 4) / 4
-            # If slot taken, push forward to next available 16th
             while slot in used_slots and slot < beats_per_measure:
                 slot += 0.25
             if slot < beats_per_measure:
@@ -788,13 +1053,13 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
                     "lyric": ln["lyric"],
                     "midi": ln["midi"],
                     "beatOffset": round(slot, 3),
-                    "duration": ln["duration"],
                 })
 
     measures = []
     for measure_idx in range(len(chords)):
-        chord_info = chords[measure_idx]
-        chord_name = chord_info.get("chord", "C")
+        chord_info = dict(chords[measure_idx])
+        chord_info["chord"] = simplify_chord_name(chord_info.get("chord", "C"))
+        chord_name = chord_info["chord"]
         sec_label = sec_map.get(measure_idx, "")
 
         root_str = _get_chord_root_string(chord_name)
@@ -804,11 +1069,12 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
         # 前奏/间奏/尾奏 = hybrid (bass pick + sparse strum)
         tab_notes = []
 
-        if sec_label in ("副歌", "桥段"):
-            # Pure strumming — full strum pattern, no bass pick
+        if sec_label == "副歌":
+            # Chorus: strumming only
             strum_events = _get_strum_events(beats_per_measure, denom)
+            measure_end = float(beats_per_measure // 3 if denom == 8 else beats_per_measure)
             for ei, (offset, direction) in enumerate(strum_events):
-                next_offset = strum_events[ei + 1][0] if ei + 1 < len(strum_events) else float(beats_per_measure)
+                next_offset = strum_events[ei + 1][0] if ei + 1 < len(strum_events) else measure_end
                 gap = next_offset - offset
                 if gap <= 0.25:
                     dur = "16"
@@ -825,8 +1091,8 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
                     "dots": 0,
                     "beatOffset": offset,
                 })
-        elif sec_label == "主歌":
-            # Pure picking — arpeggiated chord tones with root on beat 1
+        else:
+            # All other sections: picking (分解)
             pick_pattern = _get_picking_pattern(chord_name, beats_per_measure, denom)
             for p_str, p_dur, p_offset in pick_pattern:
                 tab_notes.append({
@@ -836,27 +1102,6 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
                     "dots": 0,
                     "beatOffset": p_offset,
                 })
-        else:
-            # 前奏/间奏/尾奏: full strumming (all beats are strum arrows)
-            strum_events = _get_strum_events(beats_per_measure, denom)
-            for ei, (offset, direction) in enumerate(strum_events):
-                next_offset = strum_events[ei + 1][0] if ei + 1 < len(strum_events) else float(beats_per_measure)
-                gap = next_offset - offset
-                if gap <= 0.25:
-                    dur = "16"
-                elif gap <= 0.5:
-                    dur = "8"
-                elif gap <= 1.0:
-                    dur = "q"
-                else:
-                    dur = "h"
-                tab_notes.append({
-                    "isPicking": False,
-                    "direction": direction,
-                    "duration": dur,
-                    "dots": 0,
-                    "beatOffset": offset,
-                })
 
         # ---- Attach jianpu to lyric notes ----
         lyric_notes = meas_lyrics.get(measure_idx, [])
@@ -864,12 +1109,10 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
             degree, accidental, oct_shift = midi_to_jianpu(ln["midi"], key_root)
             ln["jianpu"] = {"degree": degree, "accidental": accidental, "octaveShift": oct_shift}
 
-        if sec_label in ("副歌", "桥段"):
+        if sec_label == "副歌":
             ps = "strumming"
-        elif sec_label == "主歌":
-            ps = "picking"
         else:
-            ps = "hybrid"
+            ps = "picking"
 
         measures.append({
             "index": measure_idx,
@@ -888,6 +1131,10 @@ def generate_guitar_score(melody_notes: list, chords: list, bpm: float, key_name
             "keyMode": key_mode,
             "bpm": bpm,
             "timeSignature": time_sig,
+            "capo": capo_fret,
+            "originalKey": original_key if (capo_fret or tuning_semitones) else None,
+            "fingering": fingering if (capo_fret or tuning_semitones) else None,
+            "tuningSemitones": tuning_semitones,
         },
         "chordProgression": chords,
         "measures": measures,
@@ -915,8 +1162,12 @@ def generate_drum_score(drum_audio_path: str, bpm: float, time_sig: list, sectio
     onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop_length)
 
     beats_per_measure = time_sig[0]
+    denom = time_sig[1]
     beat_dur = 60.0 / bpm
-    measure_dur = beat_dur * beats_per_measure
+    if denom == 8:
+        measure_dur = beat_dur * (beats_per_measure // 3)
+    else:
+        measure_dur = beat_dur * beats_per_measure
 
     # Classify each onset with 6-band spectral analysis
     drum_events = []
@@ -1123,8 +1374,12 @@ def generate_bass_score(bass_audio_path: str, chords: list, bpm: float,
     # Organize into measures
     key_root = note_to_chromatic_index(key_name)
     beats_per_measure = time_sig[0]
+    denom = time_sig[1]
     beat_dur = 60.0 / bpm
-    measure_dur = beat_dur * beats_per_measure
+    if denom == 8:
+        measure_dur = beat_dur * (beats_per_measure // 3)
+    else:
+        measure_dur = beat_dur * beats_per_measure
 
     measures = []
     note_idx = 0
@@ -1161,7 +1416,7 @@ def generate_bass_score(bass_audio_path: str, chords: list, bpm: float,
         if not tab_notes and chord_info:
             sec_label = sec_map.get(measure_idx, "")
             pattern = _get_bass_pattern(chord_info["chord"], beats_per_measure,
-                                        sec_label, measure_idx)
+                                        sec_label, measure_idx, denom)
             for p_midi, p_dur, p_offset in pattern:
                 fret_info = _midi_to_bass_fret(p_midi, prev_pos)
                 prev_pos = fret_info

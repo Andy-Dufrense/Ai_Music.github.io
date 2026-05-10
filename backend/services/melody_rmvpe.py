@@ -30,7 +30,7 @@ def _f0_to_midi(f0: np.ndarray) -> np.ndarray:
     return midi
 
 
-def extract_melody(audio_path: str, max_duration: float = 180.0) -> list:
+def extract_melody(audio_path: str, max_duration: float = 600.0) -> list:
     """
     Extract melody notes using torchcrepe.
     Returns list of {time, end_time, duration, midi}.
@@ -117,7 +117,7 @@ def _segment_notes(midi_vals: np.ndarray, times: np.ndarray) -> list:
     return notes
 
 
-def extract_bass_notes(audio_path: str, max_duration: float = 180.0) -> list:
+def extract_bass_notes(audio_path: str, max_duration: float = 600.0) -> list:
     """Extract bass notes using torchcrepe with bass frequency range."""
     import soundfile as sf
     import numpy as np
