@@ -2,7 +2,7 @@
 let currentJobId = null;
 let currentFile = null;
 let pollTimer = null;
-let selectedNotationType = null;
+let selectedNotationTypes = new Set();
 
 // ===== DOM refs =====
 const $ = (sel) => document.querySelector(sel);
@@ -188,11 +188,15 @@ function updateStemOptions(stems) {
 // ===== Notation type selection =====
 $$(".notation-option").forEach((opt) => {
     opt.addEventListener("click", () => {
-        $$(".notation-option").forEach((o) => o.classList.remove("selected"));
-        opt.classList.add("selected");
-        opt.querySelector("input").checked = true;
-        selectedNotationType = opt.dataset.type;
-        btnGenerate.disabled = false;
+        const cb = opt.querySelector("input");
+        cb.checked = !cb.checked;
+        opt.classList.toggle("selected", cb.checked);
+        if (cb.checked) {
+            selectedNotationTypes.add(opt.dataset.type);
+        } else {
+            selectedNotationTypes.delete(opt.dataset.type);
+        }
+        btnGenerate.disabled = selectedNotationTypes.size === 0;
     });
 });
 
@@ -206,8 +210,11 @@ $$("#stem-options .stem-option").forEach((opt) => {
 });
 
 // ===== Generate score =====
+const NOTATION_NAMES = { piano: "钢琴谱", guitar: "吉他谱", bass: "贝斯谱", drums: "架子鼓谱" };
+
 btnGenerate.addEventListener("click", async () => {
-    if (!selectedNotationType) {
+    const types = [...selectedNotationTypes];
+    if (types.length === 0) {
         showToast("请先选择乐谱类型", "error");
         return;
     }
@@ -215,31 +222,38 @@ btnGenerate.addEventListener("click", async () => {
     const stem = document.querySelector('input[name="stem"]:checked');
     const audioStem = stem ? stem.value : "other";
 
-    setGenerating(true);
+    setGenerating(true, types.length);
 
-    const formData = new FormData();
-    formData.append("job_id", currentJobId);
-    formData.append("notation_type", selectedNotationType);
-    formData.append("audio_stem", audioStem);
+    let done = 0;
+    for (const ntype of types) {
+        const name = NOTATION_NAMES[ntype] || ntype;
+        btnGenerate.querySelector(".btn-loading").innerHTML = `<span class="spinner"></span> 生成中 (${done + 1}/${types.length} ${name})…`;
 
-    try {
-        const res = await fetch("/api/generate", {
-            method: "POST",
-            body: formData,
-        });
-        if (!res.ok) {
-            let errMsg = "生成失败";
-            try { errMsg = (await res.json()).detail || errMsg; } catch {}
-            throw new Error(errMsg);
+        const formData = new FormData();
+        formData.append("job_id", currentJobId);
+        formData.append("notation_type", ntype);
+        formData.append("audio_stem", audioStem);
+
+        try {
+            const res = await fetch("/api/generate", {
+                method: "POST",
+                body: formData,
+            });
+            if (!res.ok) {
+                let errMsg = "生成失败";
+                try { errMsg = (await res.json()).detail || errMsg; } catch {}
+                throw new Error(errMsg);
+            }
+            const data = await res.json();
+            window.open(data.score_url, "_blank");
+            done++;
+        } catch (err) {
+            showToast(`${name}: ${err.message}`, "error");
         }
-        const data = await res.json();
-        window.open(data.score_url, "_blank");
-        showToast("乐谱已生成！", "success");
-    } catch (err) {
-        showToast(err.message, "error");
-    } finally {
-        setGenerating(false);
     }
+
+    setGenerating(false);
+    if (done > 0) showToast(`已生成 ${done} 种乐谱`, "success");
 });
 
 function setGenerating(active) {
@@ -248,9 +262,10 @@ function setGenerating(active) {
         btnGenerate.querySelector(".btn-text").style.display = "none";
         btnGenerate.querySelector(".btn-loading").style.display = "flex";
     } else {
-        btnGenerate.disabled = !selectedNotationType;
+        btnGenerate.disabled = selectedNotationTypes.size === 0;
         btnGenerate.querySelector(".btn-text").style.display = "";
         btnGenerate.querySelector(".btn-loading").style.display = "none";
+        btnGenerate.querySelector(".btn-loading").innerHTML = '<span class="spinner"></span> 生成中...';
     }
 }
 

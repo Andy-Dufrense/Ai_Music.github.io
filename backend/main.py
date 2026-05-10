@@ -523,7 +523,25 @@ body {{
     box-shadow: 0 2px 12px rgba(0,0,0,0.15);
     border-radius: 2px;
 }}
+.nav-bar {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 24px;
+    background: rgba(0,0,0,0.3);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    font-size: 13px;
+}}
+.nav-bar a {{
+    color: #aaa;
+    text-decoration: none;
+    transition: color 0.2s;
+}}
+.nav-bar a:hover {{ color: #e94560; }}
+.nav-bar .sep {{ color: #444; }}
+.nav-bar .current {{ color: #e94560; font-weight: 600; }}
 @media print {{
+    .nav-bar {{ display: none; }}
     .audio-bar {{ display: none; }}
     body {{ background: #fff; color: #000; }}
     .header {{ background: #f0f0f0; border-bottom-color: #333; }}
@@ -608,6 +626,15 @@ body {{
 </style>
 </head>
 <body>
+
+<div class="nav-bar">
+    <a href="/">← 返回主页</a>
+    <span class="sep">|</span>
+    <span>AI Music</span>
+    <span class="sep">|</span>
+    <span class="current">{notation_name}</span>
+    <span style="margin-left:auto;color:#666;font-size:12px;">{song_name}</span>
+</div>
 
 <div class="header">
     <h1>分析信息</h1>
