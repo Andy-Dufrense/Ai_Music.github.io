@@ -3,6 +3,7 @@ let currentJobId = null;
 let currentFile = null;
 let pollTimer = null;
 let selectedNotationTypes = new Set();
+let generatedTypes = new Set();
 
 // ===== DOM refs =====
 const $ = (sel) => document.querySelector(sel);
@@ -94,6 +95,8 @@ btnUpload.addEventListener("click", async () => {
 
 function setUploading(active) {
     if (active) {
+        generatedTypes = new Set();
+        selectedNotationTypes = new Set();
         btnUpload.disabled = true;
         btnUpload.querySelector(".btn-text").style.display = "none";
         btnUpload.querySelector(".btn-loading").style.display = "flex";
@@ -159,6 +162,10 @@ function showSettings(data) {
     // Show available stems
     updateStemOptions(data.stems || {});
 
+    generatedTypes = new Set();
+    $("#score-links").style.display = "none";
+    $("#score-links").innerHTML = "";
+
     settingsSection.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -213,11 +220,19 @@ $$("#stem-options .stem-option").forEach((opt) => {
 const NOTATION_NAMES = { piano: "钢琴谱", guitar: "吉他谱", bass: "贝斯谱", drums: "架子鼓谱" };
 
 btnGenerate.addEventListener("click", async () => {
-    const types = [...selectedNotationTypes];
-    if (types.length === 0) {
+    const allTypes = [...selectedNotationTypes];
+    if (allTypes.length === 0) {
         showToast("请先选择乐谱类型", "error");
         return;
     }
+
+    // Split into new vs already-generated
+    const newTypes = allTypes.filter(t => !generatedTypes.has(t));
+    const skippedTypes = allTypes.filter(t => generatedTypes.has(t));
+    for (const st of skippedTypes) {
+        showToast(`${NOTATION_NAMES[st] || st} 已生成过，跳过`, "info");
+    }
+    if (newTypes.length === 0) return;
 
     const stem = document.querySelector('input[name="stem"]:checked');
     const audioStem = stem ? stem.value : "other";
@@ -226,12 +241,11 @@ btnGenerate.addEventListener("click", async () => {
 
     const scoreLinks = $("#score-links");
     scoreLinks.style.display = "block";
-    scoreLinks.innerHTML = "";
 
     let done = 0;
-    for (const ntype of types) {
+    for (const ntype of newTypes) {
         const name = NOTATION_NAMES[ntype] || ntype;
-        btnGenerate.querySelector(".btn-loading").innerHTML = `<span class="spinner"></span> 生成中 (${done + 1}/${types.length} ${name})…`;
+        btnGenerate.querySelector(".btn-loading").innerHTML = `<span class="spinner"></span> 生成中 (${done + 1}/${newTypes.length} ${name})…`;
         scoreLinks.insertAdjacentHTML("beforeend", `<span class="score-link loading" data-type="${ntype}">${name} 生成中…</span>`);
 
         const formData = new FormData();
@@ -254,6 +268,7 @@ btnGenerate.addEventListener("click", async () => {
             linkEl.className = "score-link ready";
             linkEl.textContent = `📄 ${name}`;
             linkEl.addEventListener("click", () => window.open(data.score_url, "_blank"));
+            generatedTypes.add(ntype);
             done++;
         } catch (err) {
             const linkEl = scoreLinks.querySelector(`[data-type="${ntype}"]`);
