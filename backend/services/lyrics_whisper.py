@@ -24,7 +24,7 @@ _INITIAL_PROMPT = (
     "我们 他们 自己 一起 还是 不要 已经 没有 可以 因为 所以 但是 如果 虽然 然后 只是 "
     "喜欢 害怕 希望 开始 结束 离开 回来 看见 听见 知道 明白 相信 改变 守护 原谅 放弃 "
     "第一 一次 每个 所有 最后 继续 重新 终于 忽然 总是 一直 永远 再也 多么 如此 "
-    "轻轻 慢慢 悄悄 静静 深深 远远 淡淡 微微 重重 紧紧 "
+    "轻轻 慢慢 悄悄 静静 深深 远远 淡淡 微微 重重 "
 )
 # Whisper hallucination patterns — these are NOT real lyrics
 _NOISE_PATTERNS = [
@@ -213,6 +213,21 @@ def transcribe_lyrics(audio_path: str) -> dict:
                     "start": round(w.get("start", 0), 3),
                     "end": round(w.get("end", 0), 3),
                 })
+
+    # Filter hallucinated consecutive identical single-char words
+    # (e.g. "紧紧紧紧紧紧" output as 6 separate "紧" tokens)
+    filtered = []
+    streak_char = None
+    streak_count = 0
+    for w in words:
+        if len(w["word"]) == 1 and w["word"] == streak_char:
+            streak_count += 1
+        else:
+            streak_char = w["word"] if len(w["word"]) == 1 else None
+            streak_count = 1
+        if streak_count <= 2:  # keep at most 2 consecutive identical single chars
+            filtered.append(w)
+    words = filtered
 
     return {
         "full_text": full_text,
