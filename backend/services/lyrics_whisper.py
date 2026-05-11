@@ -29,9 +29,12 @@ _INITIAL_PROMPT = (
 # Whisper hallucination patterns — these are NOT real lyrics
 _NOISE_PATTERNS = [
     "词曲", "作词", "作曲", "编曲", "演唱", "制作",
+    "词、曲", "作词、", "作曲、", "、编曲",
     "谢谢大家", "谢谢", "再见", "拜拜",
     "请欣赏", "下面", "接下来",
 ]
+# Single chars that should never appear as standalone words in Chinese lyrics
+_STANDALONE_NOISE_CHARS = set("词曲奏编")
 # Characters commonly repeated in real lyrics (vocal exclamations) — keep these as-is
 _VALID_REPEAT_CHARS = set("啊啦喔哦嗯呀嘿嗨哟哇呵唉呐吧吗呢")
 
@@ -41,9 +44,17 @@ _HALLUCINATION_CHARS = set("词曲奏演唱制作")
 
 def _filter_noise_words(text: str) -> str:
     """Remove known noise phrases that Whisper hallucinates from background audio."""
+    # Strip Chinese punctuation for pattern matching (e.g. "词、曲" → "词曲")
+    text_clean = re.sub(r"[，。！？、：；]", "", text)
     for pattern in _NOISE_PATTERNS:
-        while pattern in text:
+        while pattern in text_clean:
+            text_clean = text_clean.replace(pattern, "")
             text = text.replace(pattern, "")
+            # Also try removing with punctuation variants
+            for sep in ["、", "，", ",", " "]:
+                variant = sep.join(list(pattern))
+                if variant in text:
+                    text = text.replace(variant, "")
     # Remove repetitive substrings (hallucination loops): same 2-char sequence 3+ times
     for length in [2, 3]:
         for m in re.finditer(rf"([一-鿿]{{{length}}})", text):
@@ -227,6 +238,9 @@ def transcribe_lyrics(audio_path: str) -> dict:
             streak_count = 1
         if streak_count <= 2:  # keep at most 2 consecutive identical single chars
             filtered.append(w)
+    # Remove standalone noise chars (e.g. "词", "曲") — never appear alone in real lyrics
+    filtered = [w for w in filtered
+                if not (len(w["word"]) == 1 and w["word"] in _STANDALONE_NOISE_CHARS)]
     words = filtered
 
     return {

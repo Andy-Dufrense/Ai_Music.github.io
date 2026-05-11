@@ -23,15 +23,19 @@ def _title_bar(svg, w: float, notation_type: str, song_info: dict, song_name: st
     nt = NOTATION_NAMES.get(notation_type, notation_type)
     key = song_info.get("key", "C")
     km = song_info.get("keyMode", "major")
-    if key == "N/A" or not km:
-        kd = ""
-    else:
-        kd = f"{key} {'大调' if km == 'major' else '小调'}"
     bpm = song_info.get("bpm", 120)
     ts = song_info.get("timeSignature", [4, 4])
     capo = song_info.get("capo")
     original_key = song_info.get("originalKey")
     tuning_semitones = song_info.get("tuningSemitones")
+
+    # If capo/tuning is active, show the original key (song's real key) as primary
+    # rather than the transposed playing key
+    display_key = original_key if original_key else key
+    if display_key == "N/A" or not km:
+        kd = ""
+    else:
+        kd = f"{display_key} {'大调' if km == 'major' else '小调'}"
 
     svg.append(f'<rect x="0" y="0" width="{w}" height="{TITLE_H}" fill="#f8f8f8" rx="4"/>')
     svg.append(f'<line x1="0" y1="{TITLE_H}" x2="{w}" y2="{TITLE_H}" stroke="#e94560" stroke-width="2.5"/>')
@@ -46,9 +50,7 @@ def _title_bar(svg, w: float, notation_type: str, song_info: dict, song_name: st
     info_parts.append(f"BPM {bpm}")
     info_parts.append(f"{ts[0]}/{ts[1]}拍")
     if capo:
-        capo_text = f"Capo: {capo}"
-        if original_key:
-            capo_text += f"（原调 {original_key}）"
+        capo_text = f"Capo {capo}（{key} 调指法）"
         info_parts.append(capo_text)
     if tuning_semitones:
         steps = abs(tuning_semitones)
@@ -56,9 +58,7 @@ def _title_bar(svg, w: float, notation_type: str, song_info: dict, song_name: st
             tune_label = "降半音调弦" if tuning_semitones < 0 else "升半音调弦"
         else:
             tune_label = f"降{steps}个半音调弦" if tuning_semitones < 0 else f"升{steps}个半音调弦"
-        tune_text = tune_label
-        if original_key:
-            tune_text += f"（原调 {original_key}）"
+        tune_text = f"{tune_label}（{key} 调指法）"
         info_parts.append(tune_text)
     info = "  ·  ".join(info_parts)
     svg.append(f'<text x="{w - PAD_X}" y="{TITLE_H * 0.52}" text-anchor="end" '
