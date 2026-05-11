@@ -435,73 +435,68 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
     # Get stem paths for audio
     audio_url = f"/api/stems/{job_id}/{audio_stem}"
     vocals_url = f"/api/stems/{job_id}/vocals" if vocals_available else ""
+    stem_labels = {"piano": "钢琴", "guitar": "吉他", "bass": "贝斯", "drums": "架子鼓"}
+    stem_label = stem_labels.get(notation_type, "伴奏")
 
-    # Build compact audio controls bar — hidden audio elements + single control row
+    # Build compact audio bar — each track has its own play button + volume slider
     if vocals_available:
         audio_controls = f"""
 <audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
 <audio id="audio-vocals" preload="auto" src="{vocals_url}"></audio>
 <div class="audio-bar">
-    <button id="btn-play" class="btn-play" onclick="togglePlay()" title="播放/暂停">▶</button>
-    <div class="vol-group">
-        <span class="vol-label">🎵伴奏</span>
-        <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol()">
-    </div>
-    <div class="vol-group">
-        <span class="vol-label">🎤人声</span>
-        <input type="range" id="vol-vocals" class="vol-slider" min="0" max="100" value="60" oninput="setVol()">
-    </div>
+    <button id="btn-inst" class="btn-play" onclick="toggleTrack('inst')" title="播放/暂停{stem_label}">▶{stem_label}</button>
+    <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol('inst')" title="{stem_label}音量">
+    <button id="btn-vocals" class="btn-play btn-vocals" onclick="toggleTrack('vocals')" title="播放/暂停人声">▶人声</button>
+    <input type="range" id="vol-vocals" class="vol-slider" min="0" max="100" value="60" oninput="setVol('vocals')" title="人声音量">
     <button class="btn-save" onclick="saveScore()">保存</button>
 </div>
 <script>
-var instAudio = document.getElementById('audio-inst');
-var vocAudio = document.getElementById('audio-vocals');
-var playing = false;
-function togglePlay() {{
-    if (playing) {{ instAudio.pause(); vocAudio.pause(); }}
-    else {{ instAudio.play(); vocAudio.play(); }}
-    playing = !playing;
-    document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
-}}
-function setVol() {{
-    instAudio.volume = (document.getElementById('vol-inst').value / 100);
-    vocAudio.volume = (document.getElementById('vol-vocals').value / 100);
-}}
-// Sync: if one ends, pause both
-instAudio.onended = vocAudio.onended = function() {{
-    playing = false;
-    document.getElementById('btn-play').textContent = '▶';
+var tracks = {{
+    inst: document.getElementById('audio-inst'),
+    vocals: document.getElementById('audio-vocals')
 }};
-setVol();
+var playing = {{ inst: false, vocals: false }};
+function toggleTrack(id) {{
+    var a = tracks[id];
+    var btn = document.getElementById('btn-' + id);
+    if (playing[id]) {{ a.pause(); }}
+    else {{ a.play(); }}
+    playing[id] = !playing[id];
+    btn.textContent = (playing[id] ? '⏸' : '▶') + btn.textContent.slice(1);
+}}
+function setVol(id) {{
+    var a = tracks[id];
+    var v = document.getElementById('vol-' + id);
+    a.volume = v.value / 100;
+}}
+tracks.inst.onended = function() {{ playing.inst = false; document.getElementById('btn-inst').textContent = '▶{stem_label}'; }};
+tracks.vocals.onended = function() {{ playing.vocals = false; document.getElementById('btn-vocals').textContent = '▶人声'; }};
+setVol('inst'); setVol('vocals');
 </script>"""
     else:
         audio_controls = f"""
 <audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
 <div class="audio-bar">
-    <button id="btn-play" class="btn-play" onclick="togglePlaySingle()" title="播放/暂停">▶</button>
-    <div class="vol-group">
-        <span class="vol-label">🎵伴奏</span>
-        <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVolSingle()">
-    </div>
+    <button id="btn-inst" class="btn-play" onclick="toggleTrack('inst')" title="播放/暂停{stem_label}">▶{stem_label}</button>
+    <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol('inst')" title="{stem_label}音量">
     <button class="btn-save" onclick="saveScore()">保存</button>
 </div>
 <script>
-var instAudio = document.getElementById('audio-inst');
-var playing = false;
-function togglePlaySingle() {{
-    if (playing) {{ instAudio.pause(); }}
-    else {{ instAudio.play(); }}
-    playing = !playing;
-    document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
+var tracks = {{ inst: document.getElementById('audio-inst') }};
+var playing = {{ inst: false }};
+function toggleTrack(id) {{
+    var a = tracks[id];
+    var btn = document.getElementById('btn-' + id);
+    if (playing[id]) {{ a.pause(); }}
+    else {{ a.play(); }}
+    playing[id] = !playing[id];
+    btn.textContent = (playing[id] ? '⏸' : '▶') + btn.textContent.slice(1);
 }}
-function setVolSingle() {{
-    instAudio.volume = (document.getElementById('vol-inst').value / 100);
+function setVol(id) {{
+    tracks[id].volume = document.getElementById('vol-' + id).value / 100;
 }}
-instAudio.onended = function() {{
-    playing = false;
-    document.getElementById('btn-play').textContent = '▶';
-}};
-setVolSingle();
+tracks.inst.onended = function() {{ playing.inst = false; document.getElementById('btn-inst').textContent = '▶{stem_label}'; }};
+setVol('inst');
 </script>"""
 
     # Build fingering toggle bar and JS for guitar
@@ -646,17 +641,21 @@ body {{
     background: #e94560;
     color: #fff;
     border: none;
-    width: 34px; height: 34px;
-    border-radius: 50%;
-    font-size: 14px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    font-weight: 600;
     transition: background 0.2s;
     flex-shrink: 0;
+    white-space: nowrap;
+    font-family: inherit;
 }}
 .btn-play:hover {{ background: #c73a52; }}
+.btn-vocals {{
+    background: #6c5ce7;
+}}
+.btn-vocals:hover {{ background: #5a4bd1; }}
 .vol-group {{
     display: flex;
     align-items: center;
