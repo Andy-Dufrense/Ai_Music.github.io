@@ -319,9 +319,13 @@ async def generate_score(
     with open(score_file, "w", encoding="utf-8") as f:
         json.dump(score_data, f, ensure_ascii=False, indent=2)
 
+    # Check if vocals stem exists for accompaniment
+    vocals_available = bool(job.get("stems", {}).get("vocals"))
+
     # Generate HTML page (with fingering versions for guitar)
     html = generate_score_html(score_data, audio_stem, job_id,
-                               fingering_versions=fingering_versions if notation_type == "guitar" else None)
+                               fingering_versions=fingering_versions if notation_type == "guitar" else None,
+                               vocals_available=vocals_available)
     html_file = os.path.join(OUTPUT_DIR, job_id, f"{notation_type}_score.html")
     with open(html_file, "w", encoding="utf-8") as f:
         f.write(html)
@@ -365,7 +369,7 @@ async def get_stem(job_id: str, stem_name: str):
 
 
 def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
-                        fingering_versions: dict = None) -> str:
+                        fingering_versions: dict = None, vocals_available: bool = False) -> str:
     """Generate a self-contained HTML page with server-side rendered SVG score."""
 
     song_info = score_data.get("songInfo", {})
@@ -428,8 +432,14 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
     # Get lyrics text
     lyrics_text = score_data.get("lyrics", "")
 
-    # Get stem path for audio
+    # Get stem paths for audio
     audio_url = f"/api/stems/{job_id}/{audio_stem}"
+    vocals_url = f"/api/stems/{job_id}/vocals" if vocals_available else ""
+    vocals_audio_html = f"""
+<div class="audio-bar vocals-bar">
+    <span class="label-stem">🎤 人声</span>
+    <audio controls src="{vocals_url}"></audio>
+</div>""" if vocals_available else ""
 
     # Build fingering toggle bar and JS for guitar
     if fingering_scores:
@@ -542,7 +552,7 @@ body {{
 .nav-bar .current {{ color: #e94560; font-weight: 600; }}
 @media print {{
     .nav-bar {{ display: none; }}
-    .audio-bar {{ display: none; }}
+    .audio-bar, .vocals-bar {{ display: none; }}
     body {{ background: #fff; color: #000; }}
     .header {{ background: #f0f0f0; border-bottom-color: #333; }}
     .score-pages svg {{
@@ -592,6 +602,12 @@ body {{
 .label-stem {{
     font-size: 13px;
     color: #aaa;
+    white-space: nowrap;
+}}
+.vocals-bar {{
+    bottom: 90px;
+    background: #1a2740;
+    border-color: #6c5ce7;
 }}
 .fingering-bar {{
     display: flex;
@@ -670,10 +686,11 @@ body {{
 </div>
 
 <div class="audio-bar">
+    <span class="label-stem">🎵 伴奏</span>
     <audio controls src="{audio_url}"></audio>
     <button class="btn-save" onclick="saveScore()">保存乐谱</button>
 </div>
-
+{vocals_audio_html}
 <script>
 function saveScore() {{
     var html = document.documentElement.outerHTML;

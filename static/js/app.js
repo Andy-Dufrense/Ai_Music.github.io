@@ -4,6 +4,8 @@ let currentFile = null;
 let pollTimer = null;
 let selectedNotationTypes = new Set();
 let generatedTypes = new Set();
+let availableStems = {};  // notation → available stems map
+const STEM_MAP = { piano: "piano", guitar: "guitar", bass: "bass", drums: "drums" };
 
 // ===== DOM refs =====
 const $ = (sel) => document.querySelector(sel);
@@ -20,7 +22,6 @@ const progressFill = $("#progress-fill");
 const progressText = $("#progress-text");
 const settingsSection = $("#settings-section");
 const analysisSummary = $("#analysis-summary");
-const stemContainer = $("#stem-options-container");
 const btnGenerate = $("#btn-generate");
 const toast = $("#toast");
 
@@ -160,39 +161,15 @@ function showSettings(data) {
     $("#sum-chords").textContent = chordStr || "—";
 
     analysisSummary.style.display = "flex";
-    stemContainer.style.display = "block";
 
-    // Show available stems
-    updateStemOptions(data.stems || {});
+    // Store available stems for auto-mapping
+    availableStems = data.stems || {};
 
     generatedTypes = new Set();
     $("#score-links").style.display = "none";
     $("#score-links").innerHTML = "";
 
     settingsSection.scrollIntoView({ behavior: "smooth" });
-}
-
-function updateStemOptions(stems) {
-    $$("#stem-options .stem-option").forEach((opt) => {
-        const val = opt.querySelector("input").value;
-        if (stems[val]) {
-            opt.style.display = "flex";
-        } else {
-            opt.style.display = "none";
-            if (opt.classList.contains("selected")) {
-                opt.classList.remove("selected");
-                opt.querySelector("input").checked = false;
-            }
-        }
-    });
-
-    // Ensure at least one is selected
-    const visible = [...$$("#stem-options .stem-option")].filter((o) => o.style.display !== "none");
-    const hasSelected = visible.some((o) => o.classList.contains("selected"));
-    if (!hasSelected && visible.length > 0) {
-        visible[0].classList.add("selected");
-        visible[0].querySelector("input").checked = true;
-    }
 }
 
 // ===== Notation type selection =====
@@ -209,15 +186,6 @@ $$(".notation-option").forEach((opt) => {
             selectedNotationTypes.delete(opt.dataset.type);
         }
         btnGenerate.disabled = selectedNotationTypes.size === 0;
-    });
-});
-
-// ===== Stem selection =====
-$$("#stem-options .stem-option").forEach((opt) => {
-    opt.addEventListener("click", () => {
-        $$("#stem-options .stem-option").forEach((o) => o.classList.remove("selected"));
-        opt.classList.add("selected");
-        opt.querySelector("input").checked = true;
     });
 });
 
@@ -247,9 +215,6 @@ btnGenerate.addEventListener("click", async () => {
     }
     if (newTypes.length === 0) return;
 
-    const stem = document.querySelector('input[name="stem"]:checked');
-    const audioStem = stem ? stem.value : "other";
-
     setGenerating(true);
     scoreLinks.style.display = "block";
 
@@ -260,6 +225,10 @@ btnGenerate.addEventListener("click", async () => {
 
         const loadId = `load-${ntype}-${Date.now()}`;
         scoreLinks.insertAdjacentHTML("beforeend", `<span class="score-link loading" data-type="${ntype}" data-loadid="${loadId}">${name} 生成中…</span>`);
+
+        // Auto-map notation type to instrument stem, fallback to "other"
+        const stemName = STEM_MAP[ntype] || "other";
+        const audioStem = availableStems[stemName] ? stemName : "other";
 
         const formData = new FormData();
         formData.append("job_id", currentJobId);
