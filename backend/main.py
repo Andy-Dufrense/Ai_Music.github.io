@@ -435,11 +435,74 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
     # Get stem paths for audio
     audio_url = f"/api/stems/{job_id}/{audio_stem}"
     vocals_url = f"/api/stems/{job_id}/vocals" if vocals_available else ""
-    vocals_audio_html = f"""
-<div class="audio-bar vocals-bar">
-    <span class="label-stem">🎤 人声</span>
-    <audio controls src="{vocals_url}"></audio>
-</div>""" if vocals_available else ""
+
+    # Build compact audio controls bar — hidden audio elements + single control row
+    if vocals_available:
+        audio_controls = f"""
+<audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
+<audio id="audio-vocals" preload="auto" src="{vocals_url}"></audio>
+<div class="audio-bar">
+    <button id="btn-play" class="btn-play" onclick="togglePlay()" title="播放/暂停">▶</button>
+    <div class="vol-group">
+        <span class="vol-label">🎵伴奏</span>
+        <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol()">
+    </div>
+    <div class="vol-group">
+        <span class="vol-label">🎤人声</span>
+        <input type="range" id="vol-vocals" class="vol-slider" min="0" max="100" value="60" oninput="setVol()">
+    </div>
+    <button class="btn-save" onclick="saveScore()">保存</button>
+</div>
+<script>
+var instAudio = document.getElementById('audio-inst');
+var vocAudio = document.getElementById('audio-vocals');
+var playing = false;
+function togglePlay() {{
+    if (playing) {{ instAudio.pause(); vocAudio.pause(); }}
+    else {{ instAudio.play(); vocAudio.play(); }}
+    playing = !playing;
+    document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
+}}
+function setVol() {{
+    instAudio.volume = (document.getElementById('vol-inst').value / 100);
+    vocAudio.volume = (document.getElementById('vol-vocals').value / 100);
+}}
+// Sync: if one ends, pause both
+instAudio.onended = vocAudio.onended = function() {{
+    playing = false;
+    document.getElementById('btn-play').textContent = '▶';
+}};
+setVol();
+</script>"""
+    else:
+        audio_controls = f"""
+<audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
+<div class="audio-bar">
+    <button id="btn-play" class="btn-play" onclick="togglePlaySingle()" title="播放/暂停">▶</button>
+    <div class="vol-group">
+        <span class="vol-label">🎵伴奏</span>
+        <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVolSingle()">
+    </div>
+    <button class="btn-save" onclick="saveScore()">保存</button>
+</div>
+<script>
+var instAudio = document.getElementById('audio-inst');
+var playing = false;
+function togglePlaySingle() {{
+    if (playing) {{ instAudio.pause(); }}
+    else {{ instAudio.play(); }}
+    playing = !playing;
+    document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
+}}
+function setVolSingle() {{
+    instAudio.volume = (document.getElementById('vol-inst').value / 100);
+}}
+instAudio.onended = function() {{
+    playing = false;
+    document.getElementById('btn-play').textContent = '▶';
+}};
+setVolSingle();
+</script>"""
 
     # Build fingering toggle bar and JS for guitar
     if fingering_scores:
@@ -552,7 +615,7 @@ body {{
 .nav-bar .current {{ color: #e94560; font-weight: 600; }}
 @media print {{
     .nav-bar {{ display: none; }}
-    .audio-bar, .vocals-bar {{ display: none; }}
+    .audio-bar {{ display: none; }}
     body {{ background: #fff; color: #000; }}
     .header {{ background: #f0f0f0; border-bottom-color: #333; }}
     .score-pages svg {{
@@ -569,46 +632,72 @@ body {{
     bottom: 16px;
     left: 50%;
     transform: translateX(-50%);
-    max-width: 700px;
-    width: calc(100% - 40px);
     background: #0f3460;
-    border: 2px solid #e94560;
-    border-radius: 12px;
-    padding: 12px 24px;
+    border: 1px solid #e94560;
+    border-radius: 10px;
+    padding: 8px 16px;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     z-index: 100;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.4);
 }}
-.audio-bar audio {{
-    flex: 1;
-    max-width: 600px;
-    height: 40px;
-    border-radius: 8px;
-}}
-.btn-save {{
+.btn-play {{
     background: #e94560;
     color: #fff;
     border: none;
-    padding: 12px 28px;
-    border-radius: 8px;
-    font-size: 15px;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    font-size: 14px;
     cursor: pointer;
-    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: background 0.2s;
+    flex-shrink: 0;
 }}
-.btn-save:hover {{ background: #c73a52; }}
-.label-stem {{
-    font-size: 13px;
+.btn-play:hover {{ background: #c73a52; }}
+.vol-group {{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}}
+.vol-label {{
+    font-size: 11px;
     color: #aaa;
     white-space: nowrap;
 }}
-.vocals-bar {{
-    bottom: 90px;
-    background: #1a2740;
-    border-color: #6c5ce7;
+.vol-slider {{
+    width: 60px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
 }}
+.vol-slider::-webkit-slider-thumb {{
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #e94560;
+    cursor: pointer;
+}}
+.btn-save {{
+    background: rgba(255,255,255,0.08);
+    color: #aaa;
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+    white-space: nowrap;
+    font-family: inherit;
+}}
+.btn-save:hover {{ background: #e94560; color: #fff; border-color: #e94560; }}
 .fingering-bar {{
     display: flex;
     justify-content: center;
@@ -685,12 +774,7 @@ body {{
     {score_content_block}
 </div>
 
-<div class="audio-bar">
-    <span class="label-stem">🎵 伴奏</span>
-    <audio controls src="{audio_url}"></audio>
-    <button class="btn-save" onclick="saveScore()">保存乐谱</button>
-</div>
-{vocals_audio_html}
+{audio_controls}
 <script>
 function saveScore() {{
     var html = document.documentElement.outerHTML;
