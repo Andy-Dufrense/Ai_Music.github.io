@@ -381,7 +381,8 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
     job = jobs.get(job_id, {})
     song_name = job.get("filename", "Unknown").replace(".mp3", "").replace(".wav", "")
 
-    key_display = f"{song_info.get('key', 'C')} {'大调' if song_info.get('keyMode') == 'major' else '小调'}"
+    display_key = song_info.get('originalKey') or song_info.get('key', 'C')
+    key_display = f"{display_key} {'大调' if song_info.get('keyMode') == 'major' else '小调'}"
     chord_summary = " → ".join(
         [f"{c['degree']}({c['chord']})" for c in chords[:8]]
     ) if chords else "—"
@@ -439,18 +440,37 @@ def generate_score_html(score_data: dict, audio_stem: str, job_id: str,
     stem_label = stem_labels.get(notation_type, "伴奏")
 
     # Build compact audio bar — each track has its own play button + volume slider
+    # Uses Web Audio API (GainNode) for volume boost beyond 100% (fixes quiet bass etc.)
     if vocals_available:
         audio_controls = f"""
 <audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
 <audio id="audio-vocals" preload="auto" src="{vocals_url}"></audio>
 <div class="audio-bar">
     <button id="btn-inst" class="btn-play" onclick="toggleTrack('inst')" title="播放/暂停{stem_label}">▶{stem_label}</button>
-    <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol('inst')" title="{stem_label}音量">
+    <input type="range" id="vol-inst" class="vol-slider" min="0" max="200" value="100" oninput="setVol('inst')" title="{stem_label}音量">
     <button id="btn-vocals" class="btn-play btn-vocals" onclick="toggleTrack('vocals')" title="播放/暂停人声">▶人声</button>
-    <input type="range" id="vol-vocals" class="vol-slider" min="0" max="100" value="60" oninput="setVol('vocals')" title="人声音量">
+    <input type="range" id="vol-vocals" class="vol-slider" min="0" max="200" value="100" oninput="setVol('vocals')" title="人声音量">
+    <input type="range" id="seek-bar" class="seek-bar" min="0" max="100" value="0" oninput="seekAudio(this.value)" title="进度">
+    <span class="time-display" id="time-display">0:00 / 0:00</span>
     <button class="btn-save" onclick="saveScore()">保存</button>
 </div>
 <script>
+var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+var gainNodes = {{}};
+function initGain(id) {{
+    var a = document.getElementById('audio-' + id);
+    var src = audioCtx.createMediaElementSource(a);
+    var g = audioCtx.createGain();
+    g.gain.value = 1.0;
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    gainNodes[id] = g;
+    a.addEventListener('play', function() {{
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }}, {{once: true}});
+}}
+initGain('inst');
+initGain('vocals');
 var tracks = {{
     inst: document.getElementById('audio-inst'),
     vocals: document.getElementById('audio-vocals')
@@ -465,23 +485,57 @@ function toggleTrack(id) {{
     btn.textContent = (playing[id] ? '⏸' : '▶') + btn.textContent.slice(1);
 }}
 function setVol(id) {{
-    var a = tracks[id];
-    var v = document.getElementById('vol-' + id);
-    a.volume = v.value / 100;
+    gainNodes[id].gain.value = document.getElementById('vol-' + id).value / 100;
 }}
+function seekAudio(val) {{
+    var pct = parseFloat(val);
+    for (var k in tracks) {{
+        if (tracks[k].duration) tracks[k].currentTime = pct / 100 * tracks[k].duration;
+    }}
+}}
+function formatTime(s) {{
+    var m = Math.floor(s / 60);
+    var sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+}}
+tracks.inst.addEventListener('loadedmetadata', function() {{
+    document.getElementById('time-display').textContent = '0:00 / ' + formatTime(tracks.inst.duration);
+}});
+tracks.inst.addEventListener('timeupdate', function() {{
+    if (tracks.inst.duration) {{
+        document.getElementById('time-display').textContent = formatTime(tracks.inst.currentTime) + ' / ' + formatTime(tracks.inst.duration);
+        document.getElementById('seek-bar').value = (tracks.inst.currentTime / tracks.inst.duration) * 100;
+    }}
+}});
 tracks.inst.onended = function() {{ playing.inst = false; document.getElementById('btn-inst').textContent = '▶{stem_label}'; }};
 tracks.vocals.onended = function() {{ playing.vocals = false; document.getElementById('btn-vocals').textContent = '▶人声'; }};
-setVol('inst'); setVol('vocals');
 </script>"""
     else:
         audio_controls = f"""
 <audio id="audio-inst" preload="auto" src="{audio_url}"></audio>
 <div class="audio-bar">
     <button id="btn-inst" class="btn-play" onclick="toggleTrack('inst')" title="播放/暂停{stem_label}">▶{stem_label}</button>
-    <input type="range" id="vol-inst" class="vol-slider" min="0" max="100" value="80" oninput="setVol('inst')" title="{stem_label}音量">
+    <input type="range" id="vol-inst" class="vol-slider" min="0" max="200" value="100" oninput="setVol('inst')" title="{stem_label}音量">
+    <input type="range" id="seek-bar" class="seek-bar" min="0" max="100" value="0" oninput="seekAudio(this.value)" title="进度">
+    <span class="time-display" id="time-display">0:00 / 0:00</span>
     <button class="btn-save" onclick="saveScore()">保存</button>
 </div>
 <script>
+var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+var gainNodes = {{}};
+function initGain(id) {{
+    var a = document.getElementById('audio-' + id);
+    var src = audioCtx.createMediaElementSource(a);
+    var g = audioCtx.createGain();
+    g.gain.value = 1.0;
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    gainNodes[id] = g;
+    a.addEventListener('play', function() {{
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }}, {{once: true}});
+}}
+initGain('inst');
 var tracks = {{ inst: document.getElementById('audio-inst') }};
 var playing = {{ inst: false }};
 function toggleTrack(id) {{
@@ -493,10 +547,29 @@ function toggleTrack(id) {{
     btn.textContent = (playing[id] ? '⏸' : '▶') + btn.textContent.slice(1);
 }}
 function setVol(id) {{
-    tracks[id].volume = document.getElementById('vol-' + id).value / 100;
+    gainNodes[id].gain.value = document.getElementById('vol-' + id).value / 100;
 }}
+function seekAudio(val) {{
+    var pct = parseFloat(val);
+    for (var k in tracks) {{
+        if (tracks[k].duration) tracks[k].currentTime = pct / 100 * tracks[k].duration;
+    }}
+}}
+function formatTime(s) {{
+    var m = Math.floor(s / 60);
+    var sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+}}
+tracks.inst.addEventListener('loadedmetadata', function() {{
+    document.getElementById('time-display').textContent = '0:00 / ' + formatTime(tracks.inst.duration);
+}});
+tracks.inst.addEventListener('timeupdate', function() {{
+    if (tracks.inst.duration) {{
+        document.getElementById('time-display').textContent = formatTime(tracks.inst.currentTime) + ' / ' + formatTime(tracks.inst.duration);
+        document.getElementById('seek-bar').value = (tracks.inst.currentTime / tracks.inst.duration) * 100;
+    }}
+}});
 tracks.inst.onended = function() {{ playing.inst = false; document.getElementById('btn-inst').textContent = '▶{stem_label}'; }};
-setVol('inst');
 </script>"""
 
     # Build fingering toggle bar and JS for guitar
@@ -633,7 +706,7 @@ body {{
     padding: 8px 16px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     z-index: 100;
     box-shadow: 0 2px 12px rgba(0,0,0,0.4);
 }}
@@ -656,19 +729,9 @@ body {{
     background: #6c5ce7;
 }}
 .btn-vocals:hover {{ background: #5a4bd1; }}
-.vol-group {{
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}}
-.vol-label {{
-    font-size: 11px;
-    color: #aaa;
-    white-space: nowrap;
-}}
 .vol-slider {{
-    width: 60px;
-    height: 4px;
+    width: 48px;
+    height: 3px;
     -webkit-appearance: none;
     appearance: none;
     background: rgba(255,255,255,0.15);
@@ -678,10 +741,38 @@ body {{
 }}
 .vol-slider::-webkit-slider-thumb {{
     -webkit-appearance: none;
-    width: 12px; height: 12px;
+    width: 10px; height: 10px;
     border-radius: 50%;
     background: #e94560;
     cursor: pointer;
+}}
+.seek-bar {{
+    flex: 1;
+    min-width: 80px;
+    max-width: 300px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}}
+.seek-bar::-webkit-slider-thumb {{
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #e94560;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(233,69,96,0.5);
+}}
+.time-display {{
+    font-size: 11px;
+    color: #999;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    min-width: 88px;
+    text-align: center;
 }}
 .btn-save {{
     background: rgba(255,255,255,0.08);

@@ -32,14 +32,18 @@ _NOISE_PATTERNS = [
     "词、曲", "作词、", "作曲、", "、编曲",
     "谢谢大家", "谢谢", "再见", "拜拜",
     "请欣赏", "下面", "接下来",
+    # Traditional Chinese variants (Whisper sometimes outputs these)
+    "詞曲", "作詞", "編曲", "詞、曲", "作詞、", "、編曲",
+    "謝謝大家", "謝謝", "再見",
+    "請欣賞", "下面", "接下來",
 ]
 # Single chars that should never appear as standalone words in Chinese lyrics
-_STANDALONE_NOISE_CHARS = set("词曲奏编")
+_STANDALONE_NOISE_CHARS = set("词曲奏编詞")
 # Characters commonly repeated in real lyrics (vocal exclamations) — keep these as-is
 _VALID_REPEAT_CHARS = set("啊啦喔哦嗯呀嘿嗨哟哇呵唉呐吧吗呢")
 
 # Single characters that Whisper hallucinates in loops — never appear in real lyrics solo
-_HALLUCINATION_CHARS = set("词曲奏演唱制作")
+_HALLUCINATION_CHARS = set("词曲奏演唱制作詞")
 
 
 def _filter_noise_words(text: str) -> str:
@@ -69,6 +73,21 @@ def _filter_noise_words(text: str) -> str:
     # Remove hallucination single-char repetitions (e.g. "词词词词")
     for ch in _HALLUCINATION_CHARS:
         text = re.sub(rf"{ch}{{2,}}", "", text)
+    # Remove standalone hallucination chars — they never appear alone in real lyrics.
+    # A "standalone" char is: at text boundaries, or flanked by whitespace/punctuation.
+    # We remove them from the text so they don't leak into full_text.
+    for ch in _HALLUCINATION_CHARS:
+        # Remove char when surrounded by whitespace, punctuation, or text boundaries
+        text = re.sub(rf"(?:^|[\\s，。！？、：；]){ch}(?:$|[\\s，。！？、：；])", "", text)
+    # Also remove hallucination chars that sit adjacent to real Chinese text
+    # (Whisper often inserts single noise chars as filler between real words)
+    for ch in _HALLUCINATION_CHARS:
+        # noise-char between two Chinese chars → remove it
+        text = re.sub(rf"([一-鿿]){ch}([一-鿿])", r"\1\2", text)
+        # noise-char at start, before Chinese char
+        text = re.sub(rf"^{ch}([一-鿿])", r"\1", text)
+        # noise-char at end, after Chinese char
+        text = re.sub(rf"([一-鿿]){ch}$", r"\1", text)
     return text
 
 
@@ -182,9 +201,9 @@ def transcribe_lyrics(audio_path: str) -> dict:
         audio = librosa.resample(y=audio, orig_sr=sr, target_sr=16000)
     audio = audio.astype("float32")
 
-    # Light trim only — Demucs vocals are already clean; over-processing causes hallucination
+    # Trim only near-silence — Demucs vocals start soft; aggressive trim cuts first words
     try:
-        audio, _ = librosa.effects.trim(audio, top_db=20)
+        audio, _ = librosa.effects.trim(audio, top_db=35)
     except Exception:
         pass
 
@@ -198,7 +217,7 @@ def transcribe_lyrics(audio_path: str) -> dict:
             condition_on_previous_text=False,
             initial_prompt=_INITIAL_PROMPT,
             temperature=(0.0,),
-            no_speech_threshold=0.6,
+            no_speech_threshold=0.4,
             compression_ratio_threshold=2.4,
             logprob_threshold=-1.0,
         )
